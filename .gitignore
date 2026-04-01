@@ -1,0 +1,6 @@
+.venv/
+.barsky/
+__pycache__/
+*.pyc
+.pytest_cache/
+.gitignore

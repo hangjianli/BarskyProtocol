@@ -1,0 +1,5 @@
+[study]
+data_dir = ".barsky"
+database = ".barsky/study.db"
+box_intervals = [1, 2, 4, 8, 16]
+review_order = "oldest-first"
