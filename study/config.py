@@ -15,6 +15,8 @@ class StudyConfig:
     data_dir: Path
     database: Path
     cards_dir: Path
+    sources_dir: Path
+    imports_dir: Path
     workspaces_dir: Path
     box_intervals: dict[int, int]
     scheduler: str
@@ -73,6 +75,8 @@ def load_config(start: Path | None = None) -> StudyConfig:
         data_dir=data_dir,
         database=_resolve_path(base_dir, study.get("database", ".barsky/study.db")),
         cards_dir=_resolve_path(base_dir, study.get("cards_dir", "cards")),
+        sources_dir=_resolve_path(base_dir, study.get("sources_dir", ".barsky/sources")),
+        imports_dir=_resolve_path(base_dir, study.get("imports_dir", ".barsky/imports")),
         workspaces_dir=_resolve_path(base_dir, study.get("workspaces_dir", ".barsky/workspaces")),
         box_intervals=box_intervals,
         scheduler=study.get("scheduler", "leitner_fallback"),

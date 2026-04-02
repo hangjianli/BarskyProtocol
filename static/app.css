@@ -175,6 +175,18 @@ textarea {
   margin-top: 14px;
 }
 
+.code-block {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  border-radius: 12px;
+  background: #f2eee3;
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .status {
   display: inline-block;
   padding: 6px 10px;
@@ -197,4 +209,28 @@ textarea {
 .errors {
   margin: 0;
   padding-left: 18px;
+}
+
+.dropzone {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: #faf6ee;
+}
+
+.dropzone-active {
+  border-color: var(--accent);
+  background: #f2f6ff;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkbox-row input {
+  width: auto;
 }

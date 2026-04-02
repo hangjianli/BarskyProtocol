@@ -171,6 +171,64 @@ The review task is:
 This avoids the false simplicity of forcing code-learning into a plain
 question-answer format.
 
+## Notebook Import
+
+Notebook import is a capture flow for turning a source notebook into one or
+more standalone `code_exercise` cards.
+
+The imported notebook is provenance, not the executable study artifact.
+
+The system should support two source modes:
+
+- `external_path`
+- `managed_copy`
+
+`external_path` means the card points at the original notebook path and the app
+does not create a copy.
+
+`managed_copy` means the app stores its own copy of the notebook and points the
+card at that saved copy.
+
+In v1, the import page should support:
+
+- pasting a notebook path
+- dropping plain text that contains a notebook path
+- uploading or dragging a notebook file
+
+If a readable path is provided, the app should prefer `external_path`.
+
+If file contents are uploaded, the app should use `managed_copy`.
+
+Import behavior:
+
+1. Read the notebook source.
+2. Parse ordered markdown and code cells.
+3. Segment the notebook into candidate exercise units.
+4. Show a review screen before creating anything.
+5. Let the user keep or discard proposed cards and edit metadata.
+6. Create standalone `code_exercise` cards from the selected candidates.
+
+The app should never create notebook-derived cards silently. A review and
+approval step is required.
+
+Segmentation in v1 should be heuristic and explainable:
+
+- start a new candidate at markdown headings
+- attach following code cells until the next heading
+- if headings are weak, fall back to contiguous markdown+code chunks
+- ignore cell outputs
+- fold trivial setup cells into the nearest meaningful exercise when possible
+
+Each approved candidate should produce normal exercise assets:
+
+- `prompt.md`
+- `answer.py`
+- `solution.py`
+- `tests.py`
+
+The notebook remains provenance. The resulting study artifact is always a
+standalone Python exercise.
+
 ## App Surface
 
 Proposed v1 surface:
@@ -210,6 +268,11 @@ Create a concept card.
 #### `/cards/new/exercise`
 
 Create a code exercise card and scaffold its assets.
+
+#### `/cards/import-notebook`
+
+Import a notebook by path or upload, review proposed exercise candidates, and
+create selected `code_exercise` cards.
 
 #### `/cards/{card_id}`
 
@@ -329,6 +392,9 @@ The user creates one of two card types:
 - `concept`
 - `code_exercise`
 
+Study material can be created either manually or by importing source material
+such as a notebook.
+
 For a concept card:
 
 1. The user writes a prompt and answer.
@@ -351,6 +417,20 @@ For a code exercise card:
 
 The canonical exercise directory is the source of truth. It is not modified
 during review attempts.
+
+For notebook import:
+
+1. The user provides either:
+   - a readable notebook path, or
+   - uploaded notebook contents
+2. The app records the source mode:
+   - `external_path`
+   - `managed_copy`
+3. The app parses notebook cells and proposes candidate exercise cards.
+4. The user reviews those candidates before creation.
+5. The app creates selected standalone `code_exercise` cards.
+6. Each generated card keeps provenance pointing back to the saved or external
+   notebook source.
 
 ### 2. Build the Daily Queue
 
@@ -610,7 +690,10 @@ Fields:
 - `title`
 - `topic`
 - `tags`
-- `source`
+- `source_path`
+- `source_mode`
+- `source_label`
+- `source_cell_spec`
 - `asset_path`
 - `box`
 - `lapse_count`
@@ -624,6 +707,7 @@ Rationale:
 
 - `type` allows different review flows under one scheduler
 - `title` is a stable summary across card types
+- source fields preserve provenance for imported study material
 - `asset_path` points to exercise assets for non-text cards
 - `box` is the active Leitner position
 - `lapse_count` tracks instability over time
@@ -769,12 +853,13 @@ Why not JSON first:
 - concurrent writes and schema changes are messy
 - filtering and stats become more manual than necessary
 
-Why not store `.ipynb`:
+Why not use `.ipynb` as the executable study artifact:
 
-- the actual study artifact is Python code
-- notebooks are noisy in git
+- the actual review artifact is Python code
 - validation is easier against `.py`
-- notebook-style exercises can still be expressed as Python scripts
+- standalone exercise files are easier to diff and inspect
+- notebook-derived material can still keep notebook provenance through source
+  fields without making notebooks the runtime format
 
 ## Configuration
 

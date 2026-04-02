@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Iterable
 
 from study.config import StudyConfig
+from study.exercises import ExerciseFiles
 from study.scheduler import ScheduleDecision, fallback_schedule, initial_card_state, to_iso, utc_now
 
 
@@ -18,6 +21,10 @@ CREATE TABLE IF NOT EXISTS cards (
     topic TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '[]',
     source TEXT NOT NULL DEFAULT '',
+    source_path TEXT NOT NULL DEFAULT '',
+    source_mode TEXT NOT NULL DEFAULT '',
+    source_label TEXT NOT NULL DEFAULT '',
+    source_cell_spec TEXT NOT NULL DEFAULT '',
     asset_path TEXT NOT NULL DEFAULT '',
     box INTEGER NOT NULL DEFAULT 1 CHECK(box BETWEEN 1 AND 5),
     lapse_count INTEGER NOT NULL DEFAULT 0,
@@ -35,6 +42,16 @@ CREATE TABLE IF NOT EXISTS concept_cards (
     card_id INTEGER PRIMARY KEY,
     prompt TEXT NOT NULL,
     answer TEXT NOT NULL,
+    FOREIGN KEY(card_id) REFERENCES cards(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS exercise_cards (
+    card_id INTEGER PRIMARY KEY,
+    prompt_path TEXT NOT NULL,
+    answer_path TEXT NOT NULL,
+    solution_path TEXT NOT NULL,
+    tests_path TEXT NOT NULL,
+    entrypoint TEXT NOT NULL DEFAULT 'answer.py',
     FOREIGN KEY(card_id) REFERENCES cards(id) ON DELETE CASCADE
 );
 
@@ -68,6 +85,9 @@ CREATE TABLE IF NOT EXISTS review_attempts (
     started_at TEXT NOT NULL,
     completed_at TEXT,
     result TEXT CHECK(result IN ('pass', 'fail', 'incomplete') OR result IS NULL),
+    workspace_path TEXT,
+    validator_summary TEXT,
+    failing_tests TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY(card_id) REFERENCES cards(id) ON DELETE CASCADE
 );
 
@@ -106,6 +126,10 @@ class CardDetail:
     topic: str
     tags: list[str]
     source: str
+    source_path: str
+    source_mode: str
+    source_label: str
+    source_cell_spec: str
     box: int
     lapse_count: int
     created_at: str
@@ -117,6 +141,28 @@ class CardDetail:
     last_schedule_reason: str
     prompt: str | None
     answer: str | None
+    asset_path: str
+    entrypoint: str | None
+    tests_path: str | None
+
+
+@dataclass(frozen=True)
+class ExerciseAttemptView:
+    attempt_id: int
+    card_id: int
+    title: str
+    topic: str
+    box: int
+    next_review_at: str
+    prompt: str
+    asset_path: str
+    workspace_path: str | None
+    entrypoint: str
+    tests_path: str
+    status: str
+    result: str | None
+    validator_summary: str | None
+    failing_tests: list[str]
 
 
 def connect(config: StudyConfig) -> sqlite3.Connection:
@@ -124,6 +170,19 @@ def connect(config: StudyConfig) -> sqlite3.Connection:
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+@contextmanager
+def managed_connection(config: StudyConfig):
+    connection = connect(config)
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
@@ -222,11 +281,38 @@ def ensure_storage(config: StudyConfig) -> None:
     config.data_dir.mkdir(parents=True, exist_ok=True)
     config.database.parent.mkdir(parents=True, exist_ok=True)
     config.cards_dir.mkdir(parents=True, exist_ok=True)
+    config.sources_dir.mkdir(parents=True, exist_ok=True)
+    config.imports_dir.mkdir(parents=True, exist_ok=True)
     config.workspaces_dir.mkdir(parents=True, exist_ok=True)
 
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         _migrate_legacy_schema(connection, config)
         connection.executescript(SCHEMA)
+        _ensure_review_attempt_columns(connection)
+        _ensure_cards_columns(connection)
+
+
+def _ensure_review_attempt_columns(connection: sqlite3.Connection) -> None:
+    columns = _table_columns(connection, "review_attempts")
+    # These ALTERs keep the schema additive for existing local databases.
+    if "workspace_path" not in columns:
+        connection.execute("ALTER TABLE review_attempts ADD COLUMN workspace_path TEXT")
+    if "validator_summary" not in columns:
+        connection.execute("ALTER TABLE review_attempts ADD COLUMN validator_summary TEXT")
+    if "failing_tests" not in columns:
+        connection.execute("ALTER TABLE review_attempts ADD COLUMN failing_tests TEXT NOT NULL DEFAULT '[]'")
+
+
+def _ensure_cards_columns(connection: sqlite3.Connection) -> None:
+    columns = _table_columns(connection, "cards")
+    if "source_path" not in columns:
+        connection.execute("ALTER TABLE cards ADD COLUMN source_path TEXT NOT NULL DEFAULT ''")
+    if "source_mode" not in columns:
+        connection.execute("ALTER TABLE cards ADD COLUMN source_mode TEXT NOT NULL DEFAULT ''")
+    if "source_label" not in columns:
+        connection.execute("ALTER TABLE cards ADD COLUMN source_label TEXT NOT NULL DEFAULT ''")
+    if "source_cell_spec" not in columns:
+        connection.execute("ALTER TABLE cards ADD COLUMN source_cell_spec TEXT NOT NULL DEFAULT ''")
 
 
 def _json_tags(tags: Iterable[str]) -> str:
@@ -242,18 +328,23 @@ def add_concept_card(
     topic: str = "",
     tags: Iterable[str] = (),
     source: str = "",
+    source_path: str = "",
+    source_mode: str = "",
+    source_label: str = "",
+    source_cell_spec: str = "",
 ) -> int:
     created_at = utc_now()
     schedule = initial_card_state(config, now=created_at)
 
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         cursor = connection.execute(
             """
             INSERT INTO cards (
-                type, title, topic, tags, source, asset_path, box, lapse_count,
+                type, title, topic, tags, source, source_path, source_mode, source_label,
+                source_cell_spec, asset_path, box, lapse_count,
                 created_at, updated_at, next_review_at, scheduler_name,
                 last_interval_days, last_schedule_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "concept",
@@ -261,6 +352,10 @@ def add_concept_card(
                 topic.strip(),
                 _json_tags(tags),
                 source.strip(),
+                source_path.strip(),
+                source_mode.strip(),
+                source_label.strip(),
+                source_cell_spec.strip(),
                 "",
                 schedule.new_box,
                 0,
@@ -276,6 +371,72 @@ def add_concept_card(
         connection.execute(
             "INSERT INTO concept_cards (card_id, prompt, answer) VALUES (?, ?, ?)",
             (card_id, prompt.strip(), answer.strip()),
+        )
+        return card_id
+
+
+def add_exercise_card(
+    config: StudyConfig,
+    *,
+    title: str,
+    topic: str,
+    tags: Iterable[str],
+    source: str,
+    files: ExerciseFiles,
+    source_path: str = "",
+    source_mode: str = "",
+    source_label: str = "",
+    source_cell_spec: str = "",
+) -> int:
+    created_at = utc_now()
+    schedule = initial_card_state(config, now=created_at)
+
+    with managed_connection(config) as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO cards (
+                type, title, topic, tags, source, source_path, source_mode, source_label,
+                source_cell_spec, asset_path, box, lapse_count,
+                created_at, updated_at, next_review_at, scheduler_name,
+                last_interval_days, last_schedule_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "code_exercise",
+                title.strip(),
+                topic.strip(),
+                _json_tags(tags),
+                source.strip(),
+                source_path.strip(),
+                source_mode.strip(),
+                source_label.strip(),
+                source_cell_spec.strip(),
+                str(files.asset_dir),
+                schedule.new_box,
+                0,
+                to_iso(created_at),
+                to_iso(created_at),
+                schedule.next_review_at,
+                schedule.scheduler_name,
+                schedule.new_interval_days,
+                schedule.reason_summary,
+            ),
+        )
+        card_id = int(cursor.lastrowid)
+        connection.execute(
+            """
+            INSERT INTO exercise_cards (
+                card_id, prompt_path, answer_path, solution_path, tests_path, entrypoint
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                card_id,
+                str(files.prompt_path),
+                str(files.answer_path),
+                str(files.solution_path),
+                str(files.tests_path),
+                files.answer_path.name,
+            ),
         )
         return card_id
 
@@ -298,12 +459,12 @@ def due_cards(config: StudyConfig, *, card_type: str | None = None, limit: int |
         query += " LIMIT ?"
         params.append(limit)
 
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         return list(connection.execute(query, params))
 
 
 def list_cards(config: StudyConfig, *, limit: int = 50) -> list[sqlite3.Row]:
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         return list(
             connection.execute(
                 """
@@ -319,12 +480,17 @@ def list_cards(config: StudyConfig, *, limit: int = 50) -> list[sqlite3.Row]:
 
 
 def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         row = connection.execute(
             """
-            SELECT cards.*, concept_cards.prompt, concept_cards.answer
+            SELECT cards.*,
+                   concept_cards.prompt,
+                   concept_cards.answer,
+                   exercise_cards.entrypoint,
+                   exercise_cards.tests_path
             FROM cards
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
             WHERE cards.id = ?
             """,
             (card_id,),
@@ -339,6 +505,10 @@ def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
         topic=str(row["topic"]),
         tags=json.loads(str(row["tags"])),
         source=str(row["source"]),
+        source_path=str(row["source_path"]),
+        source_mode=str(row["source_mode"]),
+        source_label=str(row["source_label"]),
+        source_cell_spec=str(row["source_cell_spec"]),
         box=int(row["box"]),
         lapse_count=int(row["lapse_count"]),
         created_at=str(row["created_at"]),
@@ -350,11 +520,14 @@ def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
         last_schedule_reason=str(row["last_schedule_reason"]),
         prompt=str(row["prompt"]) if row["prompt"] is not None else None,
         answer=str(row["answer"]) if row["answer"] is not None else None,
+        asset_path=str(row["asset_path"]),
+        entrypoint=str(row["entrypoint"]) if row["entrypoint"] is not None else None,
+        tests_path=str(row["tests_path"]) if row["tests_path"] is not None else None,
     )
 
 
 def recent_reviews_for_card(config: StudyConfig, card_id: int, *, limit: int = 10) -> list[sqlite3.Row]:
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         return list(
             connection.execute(
                 """
@@ -375,7 +548,7 @@ def dashboard_stats(config: StudyConfig) -> DashboardStats:
     recent_cutoff = now - timedelta(days=7)
     weak_cutoff = now - timedelta(days=30)
 
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         total_cards = int(connection.execute("SELECT COUNT(*) FROM cards").fetchone()[0])
         due_now = int(
             connection.execute(
@@ -429,14 +602,16 @@ def dashboard_stats(config: StudyConfig) -> DashboardStats:
 
 
 def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> sqlite3.Row | None:
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         active = connection.execute(
             """
             SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
-                   concept_cards.prompt, concept_cards.answer
+                   cards.asset_path, concept_cards.prompt, concept_cards.answer,
+                   exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
             FROM review_attempts
             JOIN cards ON cards.id = review_attempts.card_id
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
             WHERE review_attempts.status = 'active'
               AND review_attempts.card_type = ?
             ORDER BY review_attempts.started_at ASC
@@ -449,9 +624,15 @@ def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> 
 
         next_card = connection.execute(
             """
-            SELECT cards.*, concept_cards.prompt, concept_cards.answer
+            SELECT cards.*,
+                   concept_cards.prompt,
+                   concept_cards.answer,
+                   exercise_cards.prompt_path,
+                   exercise_cards.entrypoint,
+                   exercise_cards.tests_path
             FROM cards
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
             WHERE cards.type = ?
               AND cards.next_review_at <= ?
             ORDER BY cards.next_review_at ASC, cards.id ASC
@@ -474,10 +655,12 @@ def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> 
         return connection.execute(
             """
             SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
-                   concept_cards.prompt, concept_cards.answer
+                   cards.asset_path, concept_cards.prompt, concept_cards.answer,
+                   exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
             FROM review_attempts
             JOIN cards ON cards.id = review_attempts.card_id
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
             WHERE review_attempts.id = ?
             """,
             (attempt_id,),
@@ -485,19 +668,196 @@ def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> 
 
 
 def get_review_attempt(config: StudyConfig, attempt_id: int) -> sqlite3.Row | None:
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         return connection.execute(
             """
             SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
-                   cards.scheduler_name, cards.last_schedule_reason,
-                   concept_cards.prompt, concept_cards.answer
+                   cards.scheduler_name, cards.last_schedule_reason, cards.asset_path,
+                   concept_cards.prompt, concept_cards.answer,
+                   exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
             FROM review_attempts
             JOIN cards ON cards.id = review_attempts.card_id
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
             WHERE review_attempts.id = ?
             """,
             (attempt_id,),
         ).fetchone()
+
+
+def get_exercise_attempt_view(config: StudyConfig, attempt_id: int) -> ExerciseAttemptView | None:
+    with managed_connection(config) as connection:
+        row = connection.execute(
+            """
+            SELECT review_attempts.*, cards.id AS card_id, cards.title, cards.topic, cards.box,
+                   cards.next_review_at, cards.asset_path,
+                   exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
+            FROM review_attempts
+            JOIN cards ON cards.id = review_attempts.card_id
+            JOIN exercise_cards ON exercise_cards.card_id = cards.id
+            WHERE review_attempts.id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+    prompt_path = Path(str(row["prompt_path"]))
+    return ExerciseAttemptView(
+        attempt_id=int(row["id"]),
+        card_id=int(row["card_id"]),
+        title=str(row["title"]),
+        topic=str(row["topic"]),
+        box=int(row["box"]),
+        next_review_at=str(row["next_review_at"]),
+        prompt=prompt_path.read_text(encoding="utf-8"),
+        asset_path=str(row["asset_path"]),
+        workspace_path=str(row["workspace_path"]) if row["workspace_path"] else None,
+        entrypoint=str(row["entrypoint"]),
+        tests_path=str(row["tests_path"]),
+        status=str(row["status"]),
+        result=str(row["result"]) if row["result"] else None,
+        validator_summary=str(row["validator_summary"]) if row["validator_summary"] else None,
+        failing_tests=json.loads(str(row["failing_tests"])),
+    )
+
+
+def update_attempt_workspace(
+    config: StudyConfig,
+    *,
+    attempt_id: int,
+    workspace_path: str,
+) -> None:
+    with managed_connection(config) as connection:
+        connection.execute(
+            "UPDATE review_attempts SET workspace_path = ? WHERE id = ?",
+            (workspace_path, attempt_id),
+        )
+
+
+def complete_exercise_attempt(
+    config: StudyConfig,
+    *,
+    attempt_id: int,
+    result: str,
+    validator_summary: str | None,
+    failing_tests: list[str],
+    workspace_path: str | None,
+    review_duration_seconds: int | None = None,
+) -> ReviewOutcome:
+    if result not in {"pass", "fail", "incomplete"}:
+        raise ValueError("result must be `pass`, `fail`, or `incomplete`")
+
+    completed_at = utc_now()
+
+    with managed_connection(config) as connection:
+        attempt = connection.execute(
+            """
+            SELECT review_attempts.*, cards.id AS card_id, cards.title, cards.topic, cards.box
+            FROM review_attempts
+            JOIN cards ON cards.id = review_attempts.card_id
+            WHERE review_attempts.id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if attempt is None:
+            raise ValueError(f"Review attempt {attempt_id} does not exist.")
+        if str(attempt["status"]) != "active":
+            raise ValueError(f"Review attempt {attempt_id} is already completed.")
+
+        prior_box = int(attempt["box"])
+        schedule = fallback_schedule(config, prior_box=prior_box, result=result, now=completed_at)
+        current_lapses = int(
+            connection.execute("SELECT lapse_count FROM cards WHERE id = ?", (attempt["card_id"],)).fetchone()[0]
+        )
+        lapse_count = current_lapses + 1 if result == "fail" else current_lapses
+
+        connection.execute(
+            """
+            UPDATE cards
+            SET box = ?,
+                lapse_count = ?,
+                updated_at = ?,
+                last_reviewed_at = ?,
+                next_review_at = ?,
+                last_result = ?,
+                scheduler_name = ?,
+                last_interval_days = ?,
+                last_schedule_reason = ?
+            WHERE id = ?
+            """,
+            (
+                schedule.new_box,
+                lapse_count,
+                to_iso(completed_at),
+                to_iso(completed_at),
+                schedule.next_review_at,
+                result,
+                schedule.scheduler_name,
+                schedule.new_interval_days,
+                schedule.reason_summary,
+                int(attempt["card_id"]),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO reviews (
+                card_id, reviewed_at, result, prior_box, new_box, next_review_at,
+                review_duration_seconds, failure_reason, validator_summary, failing_tests,
+                workspace_path, scheduler_name, reason_codes, reason_summary,
+                previous_interval_days, new_interval_days
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(attempt["card_id"]),
+                to_iso(completed_at),
+                result,
+                prior_box,
+                schedule.new_box,
+                schedule.next_review_at,
+                review_duration_seconds,
+                validator_summary if result == "fail" else None,
+                validator_summary,
+                json.dumps(failing_tests),
+                workspace_path,
+                schedule.scheduler_name,
+                json.dumps(list(schedule.reason_codes)),
+                schedule.reason_summary,
+                schedule.previous_interval_days,
+                schedule.new_interval_days,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE review_attempts
+            SET status = 'completed',
+                completed_at = ?,
+                result = ?,
+                workspace_path = ?,
+                validator_summary = ?,
+                failing_tests = ?
+            WHERE id = ?
+            """,
+            (
+                to_iso(completed_at),
+                result,
+                workspace_path,
+                validator_summary,
+                json.dumps(failing_tests),
+                attempt_id,
+            ),
+        )
+
+    return ReviewOutcome(
+        card_id=int(attempt["card_id"]),
+        attempt_id=attempt_id,
+        result=result,
+        title=str(attempt["title"]),
+        topic=str(attempt["topic"]),
+        prompt="",
+        answer="",
+        schedule=schedule,
+    )
 
 
 def complete_concept_attempt(
@@ -514,7 +874,7 @@ def complete_concept_attempt(
 
     completed_at = utc_now()
 
-    with connect(config) as connection:
+    with managed_connection(config) as connection:
         attempt = connection.execute(
             """
             SELECT review_attempts.*, cards.id AS card_id, cards.title, cards.topic, cards.box,

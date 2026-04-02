@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,17 +12,30 @@ from wsgiref.simple_server import make_server
 
 from study.analytics import build_pattern_snapshot
 from study.config import StudyConfig
+from study.exercises import cleanup_workspace, create_workspace, scaffold_exercise_assets
 from study.grading import GradingError, grade_concept_answer
+from study.notebooks import (
+    build_import_draft,
+    delete_import_draft,
+    load_import_draft,
+    load_notebook_text_from_path,
+    save_managed_notebook,
+)
 from study.storage import (
     add_concept_card,
+    add_exercise_card,
     complete_concept_attempt,
+    complete_exercise_attempt,
     dashboard_stats,
     get_card_detail,
+    get_exercise_attempt_view,
     get_review_attempt,
     list_cards,
     recent_reviews_for_card,
     start_review_attempt,
+    update_attempt_workspace,
 )
+from study.validators import run_exercise_tests
 
 
 @dataclass(frozen=True)
@@ -40,6 +54,7 @@ class StudyWebApp:
     def __call__(self, environ: dict, start_response: Callable) -> list[bytes]:
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
+        query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
 
         if method == "GET" and path == "/":
             response = self.handle_dashboard()
@@ -51,15 +66,31 @@ class StudyWebApp:
             response = self.handle_new_concept_form()
         elif method == "POST" and path == "/cards/new/concept":
             response = self.handle_new_concept_submit(environ)
+        elif method == "GET" and path == "/cards/new/exercise":
+            response = self.handle_new_exercise_form()
+        elif method == "POST" and path == "/cards/new/exercise":
+            response = self.handle_new_exercise_submit(environ)
+        elif method == "GET" and path == "/cards/import-notebook":
+            response = self.handle_import_notebook_form()
+        elif method == "POST" and path == "/cards/import-notebook/preview":
+            response = self.handle_import_notebook_preview(environ)
+        elif method == "POST" and path == "/cards/import-notebook/create":
+            response = self.handle_import_notebook_create(environ)
         elif method == "GET" and path == "/patterns":
             response = self.handle_patterns()
         elif method == "GET" and path == "/review":
-            response = self.handle_start_review()
+            response = self.handle_start_review(query)
         elif method == "GET" and re.fullmatch(r"/review/\d+", path):
             response = self.handle_review_page(int(path.rsplit("/", 1)[-1]))
         elif method == "POST" and re.fullmatch(r"/review/\d+/result", path):
             attempt_id = int(path.split("/")[-2])
             response = self.handle_review_result(environ, attempt_id)
+        elif method == "POST" and re.fullmatch(r"/review/\d+/workspace", path):
+            attempt_id = int(path.split("/")[-2])
+            response = self.handle_exercise_workspace(environ, attempt_id)
+        elif method == "POST" and re.fullmatch(r"/review/\d+/validate", path):
+            attempt_id = int(path.split("/")[-2])
+            response = self.handle_exercise_validate(environ, attempt_id)
         elif method == "GET" and path == "/static/app.css":
             response = self.handle_static_css()
         else:
@@ -80,8 +111,10 @@ class StudyWebApp:
           <h1>BarskyProtocol</h1>
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
           <div class="actions">
-            <a class="button" href="/review">Start Review</a>
+            <a class="button" href="/review?mode=concept">Start Concept Review</a>
+            <a class="button button-secondary" href="/review?mode=exercise">Start Exercise Review</a>
             <a class="button button-secondary" href="/cards/new/concept">Add Concept Card</a>
+            <a class="button button-secondary" href="/cards/new/exercise">Add Exercise</a>
           </div>
         </section>
         <section class="grid">
@@ -162,6 +195,17 @@ class StudyWebApp:
               </details>
             </section>
             """
+        elif card.type == "code_exercise":
+            prompt_block = f"""
+            <section class="panel">
+              <h2>Exercise Files</h2>
+              <dl class="stats">
+                <div><dt>Asset path</dt><dd>{html.escape(card.asset_path)}</dd></div>
+                <div><dt>Entry point</dt><dd>{html.escape(card.entrypoint or '-')}</dd></div>
+                <div><dt>Tests</dt><dd>{html.escape(card.tests_path or '-')}</dd></div>
+              </dl>
+            </section>
+            """
 
         content = f"""
         <section class="panel">
@@ -174,6 +218,10 @@ class StudyWebApp:
             <div><dt>Next review</dt><dd>{html.escape(card.next_review_at)}</dd></div>
             <div><dt>Scheduler</dt><dd>{html.escape(card.scheduler_name)}</dd></div>
             <div><dt>Last result</dt><dd>{html.escape(card.last_result or '-')}</dd></div>
+            <div><dt>Source label</dt><dd>{html.escape(card.source_label or card.source or '-')}</dd></div>
+            <div><dt>Source path</dt><dd>{html.escape(card.source_path or '-')}</dd></div>
+            <div><dt>Source mode</dt><dd>{html.escape(card.source_mode or '-')}</dd></div>
+            <div><dt>Source cells</dt><dd>{html.escape(card.source_cell_spec or '-')}</dd></div>
           </dl>
           <p>{html.escape(card.last_schedule_reason)}</p>
         </section>
@@ -250,6 +298,68 @@ class StudyWebApp:
         """
         return self.html_page("New Concept Card", content)
 
+    def handle_new_exercise_form(self, errors: list[str] | None = None, values: dict[str, str] | None = None) -> Response:
+        values = values or {}
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = f'<section class="panel panel-error"><h2>Fix these fields</h2><ul class="errors">{error_items}</ul></section>'
+
+        content = f"""
+        {error_html}
+        <section class="panel">
+          <h1>New Exercise</h1>
+          <form method="post" action="/cards/new/exercise" class="form-stack">
+            {self._input("title", "Title", values.get("title", ""))}
+            {self._input("topic", "Topic", values.get("topic", ""))}
+            {self._input("tags", "Tags", values.get("tags", ""))}
+            {self._textarea("prompt", "Prompt", values.get("prompt", ""), rows=10)}
+            {self._input("source", "Source", values.get("source", ""))}
+            <div class="actions">
+              <button class="button" type="submit">Create Exercise</button>
+              <a class="button button-secondary" href="/">Cancel</a>
+            </div>
+          </form>
+        </section>
+        """
+        return self.html_page("New Exercise", content)
+
+    def handle_import_notebook_form(
+        self,
+        errors: list[str] | None = None,
+        values: dict[str, str] | None = None,
+    ) -> Response:
+        values = values or {}
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = f'<section class="panel panel-error"><h2>Cannot parse this notebook yet</h2><ul class="errors">{error_items}</ul></section>'
+
+        content = f"""
+        {error_html}
+        <section class="panel">
+          <h1>Import Notebook</h1>
+          <p class="muted">Provide a notebook path for no-copy import, or drop a file to create a managed source snapshot.</p>
+          <form method="post" action="/cards/import-notebook/preview" class="form-stack" id="notebook-import-form">
+            {self._input("source_path", "Notebook path", values.get("source_path", ""))}
+            {self._input("topic", "Default topic", values.get("topic", ""))}
+            {self._input("source_label", "Source label", values.get("source_label", ""))}
+            <input type="hidden" name="notebook_json" id="notebook-json" value="">
+            <section class="dropzone" id="notebook-dropzone">
+              <h2>Drop .ipynb or path</h2>
+              <p class="muted">Drop a notebook file, paste a path, or click to choose a local notebook file.</p>
+              <input type="file" id="notebook-file" accept=".ipynb">
+            </section>
+            <div class="actions">
+              <button class="button" type="submit">Preview Candidates</button>
+              <a class="button button-secondary" href="/">Cancel</a>
+            </div>
+          </form>
+        </section>
+        {self._import_notebook_script()}
+        """
+        return self.html_page("Import Notebook", content)
+
     def handle_new_concept_submit(self, environ: dict) -> Response:
         form = self._parse_form(environ)
         values = {key: self._first(form, key) for key in ("title", "topic", "tags", "prompt", "answer", "source")}
@@ -274,13 +384,185 @@ class StudyWebApp:
         )
         return self.redirect("/")
 
-    def handle_start_review(self) -> Response:
-        attempt = start_review_attempt(self.config, card_type="concept")
+    def handle_new_exercise_submit(self, environ: dict) -> Response:
+        form = self._parse_form(environ)
+        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "prompt", "source")}
+        errors: list[str] = []
+        if not values["title"].strip():
+            errors.append("Title is required.")
+        if not values["prompt"].strip():
+            errors.append("Prompt is required.")
+        if errors:
+            return self.handle_new_exercise_form(errors=errors, values=values)
+
+        try:
+            files = scaffold_exercise_assets(
+                self.config,
+                title=values["title"],
+                topic=values["topic"],
+                prompt=values["prompt"],
+            )
+        except FileExistsError:
+            return self.handle_new_exercise_form(
+                errors=["An exercise with the same generated slug already exists."],
+                values=values,
+            )
+
+        card_id = add_exercise_card(
+            self.config,
+            title=values["title"],
+            topic=values["topic"],
+            tags=[tag.strip() for tag in values["tags"].split(",") if tag.strip()],
+            source=values["source"],
+            files=files,
+        )
+        return self.redirect(f"/cards/{card_id}")
+
+    def handle_import_notebook_preview(self, environ: dict) -> Response:
+        form = self._parse_form(environ)
+        values = {
+            key: self._first(form, key)
+            for key in ("source_path", "topic", "source_label", "notebook_json")
+        }
+        try:
+            source_path, source_mode, source_label, notebook_text = self._resolve_notebook_source(values)
+            draft = build_import_draft(
+                self.config,
+                source_path=source_path,
+                source_mode=source_mode,
+                source_label=source_label,
+                topic=values["topic"],
+                notebook_text=notebook_text,
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self.handle_import_notebook_form(errors=[str(exc)], values=values)
+
+        if not draft.candidates:
+            return self.handle_import_notebook_form(
+                errors=["No code exercise candidates were found in this notebook."],
+                values=values,
+            )
+        return self.render_import_review_page(draft)
+
+    def render_import_review_page(self, draft: object, errors: list[str] | None = None) -> Response:
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = f'<section class="panel panel-error"><h2>Cannot create cards yet</h2><ul class="errors">{error_items}</ul></section>'
+
+        candidate_sections = []
+        for index, candidate in enumerate(draft.candidates):
+            topic_value = candidate.topic or draft.topic
+            candidate_sections.append(
+                f"""
+                <article class="panel">
+                  <h2>Candidate {index + 1}</h2>
+                  <div class="checkbox-row">
+                    <input type="checkbox" id="keep_{index}" name="keep_{index}" value="yes" checked>
+                    <label for="keep_{index}">Create this exercise card</label>
+                  </div>
+                  {self._input(f"title_{index}", "Title", candidate.title)}
+                  {self._input(f"topic_{index}", "Topic", topic_value)}
+                  {self._input(f"tags_{index}", "Tags", "")}
+                  <p class="muted">Source section: {html.escape(candidate.source_cell_spec)}</p>
+                  <details class="answer-block" open>
+                    <summary>Prompt preview</summary>
+                    <pre class="code-block">{html.escape(candidate.prompt)}</pre>
+                  </details>
+                  <details class="answer-block">
+                    <summary>Solution preview</summary>
+                    <pre class="code-block">{html.escape(candidate.solution_code)}</pre>
+                  </details>
+                </article>
+                """
+            )
+
+        content = f"""
+        {error_html}
+        <section class="panel">
+          <h1>Review Imported Notebook</h1>
+          <dl class="stats">
+            <div><dt>Notebook</dt><dd>{html.escape(draft.source_label)}</dd></div>
+            <div><dt>Source path</dt><dd>{html.escape(draft.source_path)}</dd></div>
+            <div><dt>Source mode</dt><dd>{html.escape(draft.source_mode)}</dd></div>
+            <div><dt>Markdown cells</dt><dd>{draft.markdown_cells}</dd></div>
+            <div><dt>Code cells</dt><dd>{draft.code_cells}</dd></div>
+            <div><dt>Candidates</dt><dd>{len(draft.candidates)}</dd></div>
+          </dl>
+        </section>
+        <form method="post" action="/cards/import-notebook/create" class="form-stack">
+          <input type="hidden" name="draft_id" value="{html.escape(draft.draft_id)}">
+          {''.join(candidate_sections)}
+          <div class="actions">
+            <button class="button" type="submit">Create Selected Cards</button>
+            <a class="button button-secondary" href="/cards/import-notebook">Start Over</a>
+          </div>
+        </form>
+        """
+        return self.html_page("Review Notebook Import", content)
+
+    def handle_import_notebook_create(self, environ: dict) -> Response:
+        form = self._parse_form(environ)
+        draft_id = self._first(form, "draft_id")
+        try:
+            draft = load_import_draft(self.config, draft_id)
+        except ValueError as exc:
+            return self.handle_import_notebook_form(errors=[str(exc)])
+
+        created_ids: list[int] = []
+        for index, candidate in enumerate(draft.candidates):
+            if self._first(form, f"keep_{index}") != "yes":
+                continue
+
+            title = self._first(form, f"title_{index}").strip() or candidate.title
+            topic = self._first(form, f"topic_{index}").strip() or candidate.topic or draft.topic
+            tags = [tag.strip() for tag in self._first(form, f"tags_{index}").split(",") if tag.strip()]
+            try:
+                files = scaffold_exercise_assets(
+                    self.config,
+                    title=title,
+                    topic=topic,
+                    prompt=candidate.prompt,
+                    answer_body=candidate.answer_template,
+                    solution_body=candidate.solution_code,
+                    tests_body=candidate.tests_template,
+                )
+            except FileExistsError:
+                return self.render_import_review_page(
+                    draft,
+                    errors=[f"An exercise with the generated slug for '{title}' already exists."],
+                )
+
+            card_id = add_exercise_card(
+                self.config,
+                title=title,
+                topic=topic,
+                tags=tags,
+                source=draft.source_label,
+                source_path=draft.source_path,
+                source_mode=draft.source_mode,
+                source_label=draft.source_label,
+                source_cell_spec=candidate.source_cell_spec,
+                files=files,
+            )
+            created_ids.append(card_id)
+
+        if not created_ids:
+            return self.render_import_review_page(draft, errors=["Select at least one candidate to create cards."])
+        delete_import_draft(self.config, draft.draft_id)
+        return self.redirect(f"/cards/{created_ids[0]}")
+
+    def handle_start_review(self, query: dict[str, list[str]]) -> Response:
+        mode = query.get("mode", ["concept"])[0]
+        if mode not in {"concept", "exercise"}:
+            mode = "concept"
+        card_type = "concept" if mode == "concept" else "code_exercise"
+        attempt = start_review_attempt(self.config, card_type=card_type)
         if attempt is None:
             content = """
             <section class="panel">
               <h1>No Cards Due</h1>
-              <p class="muted">The concept review queue is clear for now.</p>
+              <p class="muted">The selected review queue is clear for now.</p>
               <div class="actions">
                 <a class="button" href="/">Back to Dashboard</a>
               </div>
@@ -294,6 +576,8 @@ class StudyWebApp:
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
 
+        if str(attempt["card_type"]) == "code_exercise":
+            return self.render_exercise_review_page(attempt_id)
         return self.render_review_page(attempt)
 
     def render_review_page(
@@ -347,6 +631,69 @@ class StudyWebApp:
         </section>
         """
         return self.html_page("Concept Review", content)
+
+    def render_exercise_review_page(self, attempt_id: int, errors: list[str] | None = None) -> Response:
+        attempt = get_exercise_attempt_view(self.config, attempt_id)
+        if attempt is None:
+            return self.text("404 Not Found", status="404 Not Found")
+        if attempt.status == "completed":
+            content = f"""
+            <section class="panel">
+              <h1>Review Completed</h1>
+              <p class="muted">Attempt {attempt.attempt_id} has already been recorded as {html.escape(attempt.result or '-')}.</p>
+              <div class="actions">
+                <a class="button" href="/review?mode=exercise">Continue Review</a>
+                <a class="button button-secondary" href="/">Dashboard</a>
+              </div>
+            </section>
+            """
+            return self.html_page("Exercise Review", content)
+
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = f'<section class="panel panel-error"><h2>Cannot validate this exercise yet</h2><ul class="errors">{error_items}</ul></section>'
+
+        workspace_html = html.escape(attempt.workspace_path) if attempt.workspace_path else "Not created yet."
+        failing_tests = "".join(
+            f"<li><span>{html.escape(name)}</span><strong>fail</strong></li>" for name in attempt.failing_tests
+        ) or "<li><span>No failing tests recorded yet</span><strong>-</strong></li>"
+
+        content = f"""
+        {error_html}
+        <section class="panel">
+          <p class="eyebrow">Exercise Review</p>
+          <h1>{html.escape(attempt.title)}</h1>
+          <p class="meta">Topic: {html.escape(attempt.topic or '-')} · Box: {attempt.box} · Due: {html.escape(attempt.next_review_at)}</p>
+        </section>
+        <section class="panel">
+          <h2>Prompt</h2>
+          <pre class="code-block">{html.escape(attempt.prompt)}</pre>
+        </section>
+        <section class="panel">
+          <h2>Workspace</h2>
+          <dl class="stats">
+            <div><dt>Asset path</dt><dd>{html.escape(attempt.asset_path)}</dd></div>
+            <div><dt>Workspace</dt><dd>{workspace_html}</dd></div>
+            <div><dt>Edit file</dt><dd>{html.escape(attempt.entrypoint)}</dd></div>
+            <div><dt>Tests</dt><dd>{html.escape(Path(attempt.tests_path).name)}</dd></div>
+          </dl>
+          <form method="post" action="/review/{attempt_id}/workspace" class="actions">
+            <button class="button" type="submit" name="action" value="create">{'Reset Workspace' if attempt.workspace_path else 'Create Workspace'}</button>
+            <button class="button button-secondary" type="submit" name="action" value="incomplete">Mark Incomplete</button>
+          </form>
+        </section>
+        <section class="panel">
+          <h2>Validation</h2>
+          <p class="muted">Edit the workspace locally, then run the test suite from the browser.</p>
+          <form method="post" action="/review/{attempt_id}/validate" class="actions">
+            <button class="button" type="submit">Run Tests</button>
+          </form>
+          <p>{html.escape(attempt.validator_summary or 'No validation run yet.')}</p>
+          <ul class="list">{failing_tests}</ul>
+        </section>
+        """
+        return self.html_page("Exercise Review", content)
 
     def handle_review_result(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
@@ -433,6 +780,101 @@ class StudyWebApp:
         """
         return self.html_page("Review Result", content)
 
+    def handle_exercise_workspace(self, environ: dict, attempt_id: int) -> Response:
+        form = self._parse_form(environ)
+        action = self._first(form, "action")
+        attempt = get_exercise_attempt_view(self.config, attempt_id)
+        if attempt is None:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        if action == "incomplete":
+            outcome = complete_exercise_attempt(
+                self.config,
+                attempt_id=attempt_id,
+                result="incomplete",
+                validator_summary="The exercise attempt was marked incomplete.",
+                failing_tests=[],
+                workspace_path=attempt.workspace_path,
+            )
+            return self.render_exercise_result_page(outcome, validator_summary="The exercise attempt was marked incomplete.", failing_tests=[], workspace_path=attempt.workspace_path)
+
+        workspace_dir = create_workspace(self.config, attempt_id=attempt_id, asset_dir=Path(attempt.asset_path))
+        update_attempt_workspace(self.config, attempt_id=attempt_id, workspace_path=str(workspace_dir))
+        return self.redirect(f"/review/{attempt_id}")
+
+    def handle_exercise_validate(self, environ: dict, attempt_id: int) -> Response:
+        attempt = get_exercise_attempt_view(self.config, attempt_id)
+        if attempt is None:
+            return self.text("404 Not Found", status="404 Not Found")
+        if not attempt.workspace_path:
+            return self.render_exercise_review_page(attempt_id, errors=["Create a workspace before running tests."])
+
+        validation = run_exercise_tests(Path(attempt.workspace_path))
+        outcome = complete_exercise_attempt(
+            self.config,
+            attempt_id=attempt_id,
+            result=validation.result,
+            validator_summary=validation.summary,
+            failing_tests=validation.failing_tests,
+            workspace_path=attempt.workspace_path,
+        )
+
+        if validation.result == "pass":
+            cleanup_workspace(Path(attempt.workspace_path))
+
+        return self.render_exercise_result_page(
+            outcome,
+            validator_summary=validation.summary,
+            failing_tests=validation.failing_tests,
+            workspace_path=attempt.workspace_path,
+        )
+
+    def render_exercise_result_page(
+        self,
+        outcome: object,
+        *,
+        validator_summary: str,
+        failing_tests: list[str],
+        workspace_path: str | None,
+    ) -> Response:
+        schedule = outcome.schedule
+        failing_html = "".join(
+            f"<li><span>{html.escape(name)}</span><strong>fail</strong></li>" for name in failing_tests
+        ) or "<li><span>No failing tests</span><strong>-</strong></li>"
+
+        content = f"""
+        <section class="panel">
+          <p class="eyebrow">Exercise Result</p>
+          <h1>{html.escape(outcome.title)}</h1>
+          <p class="status status-{html.escape(outcome.result)}">Result: {html.escape(outcome.result)}</p>
+        </section>
+        <section class="panel">
+          <h2>Validation</h2>
+          <dl class="stats">
+            <div><dt>Workspace</dt><dd>{html.escape(workspace_path or '-')}</dd></div>
+          </dl>
+          <p>{html.escape(validator_summary)}</p>
+          <ul class="list">{failing_html}</ul>
+        </section>
+        <section class="panel">
+          <h2>Scheduling</h2>
+          <dl class="stats">
+            <div><dt>Scheduler</dt><dd>{html.escape(schedule.scheduler_name)}</dd></div>
+            <div><dt>Previous box</dt><dd>{schedule.prior_box}</dd></div>
+            <div><dt>New box</dt><dd>{schedule.new_box}</dd></div>
+            <div><dt>Previous interval</dt><dd>{schedule.previous_interval_days if schedule.previous_interval_days is not None else "new"}</dd></div>
+            <div><dt>New interval</dt><dd>{schedule.new_interval_days} day(s)</dd></div>
+            <div><dt>Next review</dt><dd>{html.escape(schedule.next_review_at)}</dd></div>
+          </dl>
+          <p>{html.escape(schedule.reason_summary)}</p>
+        </section>
+        <section class="actions">
+          <a class="button" href="/review?mode=exercise">Continue Review</a>
+          <a class="button button-secondary" href="/">Dashboard</a>
+        </section>
+        """
+        return self.html_page("Exercise Result", content)
+
     def handle_static_css(self) -> Response:
         css_path = self.static_dir / "app.css"
         body = css_path.read_bytes()
@@ -484,6 +926,71 @@ class StudyWebApp:
             f'<label><span>{html.escape(label)}</span>'
             f'<textarea name="{html.escape(name)}" rows="{rows}">{safe_value}</textarea></label>'
         )
+
+    def _resolve_notebook_source(self, values: dict[str, str]) -> tuple[str, str, str, str]:
+        source_path = values["source_path"].strip()
+        notebook_json = values["notebook_json"].strip()
+        source_label = values["source_label"].strip()
+
+        if source_path:
+            resolved_path, notebook_text = load_notebook_text_from_path(source_path)
+            return str(resolved_path), "external_path", source_label or resolved_path.name, notebook_text
+        if notebook_json:
+            label = source_label or "imported-notebook.ipynb"
+            managed_path = save_managed_notebook(self.config, source_label=label, notebook_text=notebook_json)
+            return str(managed_path), "managed_copy", label, notebook_json
+        raise ValueError("Provide a notebook path or drop a notebook file first.")
+
+    def _import_notebook_script(self) -> str:
+        return """
+        <script>
+        (() => {
+          const dropzone = document.getElementById("notebook-dropzone");
+          const fileInput = document.getElementById("notebook-file");
+          const jsonInput = document.getElementById("notebook-json");
+          const pathInput = document.querySelector('input[name="source_path"]');
+          const labelInput = document.querySelector('input[name="source_label"]');
+
+          async function loadFile(file) {
+            if (!file) return;
+            const text = await file.text();
+            jsonInput.value = text;
+            if (!labelInput.value) labelInput.value = file.name;
+            pathInput.value = "";
+          }
+
+          fileInput.addEventListener("change", async (event) => {
+            await loadFile(event.target.files[0]);
+          });
+
+          dropzone.addEventListener("dragover", (event) => {
+            event.preventDefault();
+            dropzone.classList.add("dropzone-active");
+          });
+          dropzone.addEventListener("dragleave", () => {
+            dropzone.classList.remove("dropzone-active");
+          });
+          dropzone.addEventListener("drop", async (event) => {
+            event.preventDefault();
+            dropzone.classList.remove("dropzone-active");
+            const file = event.dataTransfer.files && event.dataTransfer.files[0];
+            if (file) {
+              await loadFile(file);
+              return;
+            }
+            const text = event.dataTransfer.getData("text/plain").trim();
+            if (text) {
+              pathInput.value = text;
+              jsonInput.value = "";
+              if (!labelInput.value) {
+                const parts = text.split(/[\\\\/]/);
+                labelInput.value = parts[parts.length - 1];
+              }
+            }
+          });
+        })();
+        </script>
+        """
 
 
 def serve_app(*, config: StudyConfig, host: str, port: int) -> None:

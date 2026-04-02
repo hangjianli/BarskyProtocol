@@ -1,32 +1,46 @@
 from __future__ import annotations
 
 import io
+import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote_plus
 from unittest.mock import patch
 from wsgiref.util import setup_testing_defaults
 
 from study.config import load_config
+from study.exercises import scaffold_exercise_assets
 from study.scheduler import fallback_schedule
 from study.storage import (
     add_concept_card,
+    add_exercise_card,
     complete_concept_attempt,
     dashboard_stats,
     due_cards,
     ensure_storage,
     get_card_detail,
+    get_exercise_attempt_view,
     get_review_attempt,
     start_review_attempt,
 )
 from study.web import StudyWebApp
 
 
-def call_app(app: StudyWebApp, *, method: str, path: str, body: str = "") -> tuple[str, dict[str, str], str]:
+def call_app(
+    app: StudyWebApp,
+    *,
+    method: str,
+    path: str,
+    body: str = "",
+    query_string: str = "",
+) -> tuple[str, dict[str, str], str]:
     environ: dict[str, object] = {}
     setup_testing_defaults(environ)
     environ["REQUEST_METHOD"] = method
     environ["PATH_INFO"] = path
+    environ["QUERY_STRING"] = query_string
     encoded = body.encode("utf-8")
     environ["CONTENT_LENGTH"] = str(len(encoded))
     environ["wsgi.input"] = io.BytesIO(encoded)
@@ -143,7 +157,7 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, _, dashboard_html = call_app(self.app, method="GET", path="/")
         self.assertEqual(status, "200 OK")
-        self.assertIn("Start Review", dashboard_html)
+        self.assertIn("Start Concept Review", dashboard_html)
         self.assertIn("Due now", dashboard_html)
 
         status, headers, _ = call_app(self.app, method="GET", path="/review")
@@ -231,6 +245,198 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Weak Topics", body)
         self.assertIn("High-Lapse Cards", body)
         self.assertIn("Repeated Incompletes", body)
+
+    def test_new_exercise_page_creates_card_and_assets(self) -> None:
+        status, _, body = call_app(
+            self.app,
+            method="POST",
+            path="/cards/new/exercise",
+            body="title=Binary+Search&topic=algorithms&tags=python%2Csearch&prompt=Implement+binary+search",
+        )
+        self.assertEqual(status, "303 See Other")
+
+        detail = get_card_detail(self.config, 1)
+        self.assertEqual(detail.type, "code_exercise")
+        self.assertTrue(Path(detail.asset_path).is_dir())
+        self.assertTrue((Path(detail.asset_path) / "tests.py").is_file())
+
+    def test_exercise_review_creates_workspace_and_records_validation(self) -> None:
+        files = scaffold_exercise_assets(
+            self.config,
+            title="Adder",
+            topic="python",
+            prompt="Implement add(a, b) and return the sum.",
+        )
+        add_exercise_card(
+            self.config,
+            title="Adder",
+            topic="python",
+            tags=["exercise"],
+            source="",
+            files=files,
+        )
+
+        status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=exercise")
+        self.assertEqual(status, "303 See Other")
+        review_path = headers["Location"]
+
+        status, _, review_html = call_app(self.app, method="GET", path=review_path)
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Exercise Review", review_html)
+        self.assertIn("Create Workspace", review_html)
+
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path=f"{review_path}/workspace",
+            body="action=create",
+        )
+        self.assertEqual(status, "303 See Other")
+        attempt_id = int(review_path.rsplit("/", 1)[-1])
+        attempt = get_exercise_attempt_view(self.config, attempt_id)
+        self.assertIsNotNone(attempt.workspace_path)
+
+        status, _, fail_html = call_app(
+            self.app,
+            method="POST",
+            path=f"{review_path}/validate",
+            body="",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Result: fail", fail_html)
+        self.assertIn("test_placeholder", fail_html)
+
+    def test_exercise_review_records_successful_validation(self) -> None:
+        files = scaffold_exercise_assets(
+            self.config,
+            title="Adder Pass",
+            topic="python",
+            prompt="Implement add(a, b) and return the sum.",
+        )
+        add_exercise_card(
+            self.config,
+            title="Adder Pass",
+            topic="python",
+            tags=["exercise"],
+            source="",
+            files=files,
+        )
+
+        status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=exercise")
+        self.assertEqual(status, "303 See Other")
+        review_path = headers["Location"]
+        call_app(
+            self.app,
+            method="POST",
+            path=f"{review_path}/workspace",
+            body="action=create",
+        )
+        attempt_id = int(review_path.rsplit("/", 1)[-1])
+        attempt = get_exercise_attempt_view(self.config, attempt_id)
+        workspace = Path(attempt.workspace_path)
+        (workspace / "answer.py").write_text("def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
+        (workspace / "tests.py").write_text(
+            "import unittest\nimport answer\n\nclass ExerciseTests(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(answer.add(2, 3), 5)\n\nif __name__ == '__main__':\n    unittest.main()\n",
+            encoding="utf-8",
+        )
+
+        status, _, pass_html = call_app(
+            self.app,
+            method="POST",
+            path=f"{review_path}/validate",
+            body="",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Result: pass", pass_html)
+        self.assertIn("All exercise tests passed.", pass_html)
+
+    def test_import_notebook_from_external_path_creates_multiple_cards(self) -> None:
+        notebook_path = self.root / "tokenizer.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Tokenizer\n", "Build a tiny tokenizer.\n"]},
+                        {"cell_type": "code", "source": ["def tokenize(text: str) -> list[str]:\n", "    return text.split()\n"]},
+                        {"cell_type": "markdown", "source": ["# Dataloader\n", "Create batches.\n"]},
+                        {"cell_type": "code", "source": ["def batch(items: list[int], size: int) -> list[list[int]]:\n", "    return [items[i:i + size] for i in range(0, len(items), size)]\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={notebook_path}&topic=llm-from-scratch&source_label=Chapter+2",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Review Imported Notebook", review_html)
+        self.assertIn("external_path", review_html)
+        self.assertIn("Candidate 1", review_html)
+        self.assertIn("Candidate 2", review_html)
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', review_html)
+        self.assertIsNotNone(draft_id)
+
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/create",
+            body=(
+                f"draft_id={draft_id.group(1)}"
+                "&keep_0=yes&title_0=Tokenizer&topic_0=llm-from-scratch&tags_0=python%2Ctokenizer"
+                "&keep_1=yes&title_1=Dataloader&topic_1=llm-from-scratch&tags_1=python%2Cloader"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(headers["Location"], "/cards/1")
+
+        first = get_card_detail(self.config, 1)
+        second = get_card_detail(self.config, 2)
+        self.assertEqual(first.source_mode, "external_path")
+        self.assertEqual(first.source_label, "Chapter 2")
+        self.assertEqual(Path(first.source_path), notebook_path.resolve())
+        self.assertIn("cells", first.source_cell_spec)
+        self.assertEqual(second.source_mode, "external_path")
+        self.assertTrue((Path(first.asset_path) / "solution.py").read_text(encoding="utf-8").startswith("def tokenize"))
+
+    def test_import_notebook_upload_creates_managed_copy(self) -> None:
+        notebook_json = json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "markdown", "source": ["# Tiny Exercise\n", "Short section.\n"]},
+                    {"cell_type": "code", "source": ["def square(value: int) -> int:\n", "    return value * value\n"]},
+                ]
+            }
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body="topic=math&source_label=tiny.ipynb&notebook_json=" + quote_plus(notebook_json),
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("managed_copy", review_html)
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', review_html)
+        self.assertIsNotNone(draft_id)
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/create",
+            body=(
+                f"draft_id={draft_id.group(1)}"
+                "&keep_0=yes&title_0=Square&topic_0=math&tags_0=python"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+        detail = get_card_detail(self.config, 1)
+        self.assertEqual(detail.source_mode, "managed_copy")
+        self.assertTrue(Path(detail.source_path).is_file())
 
 
 if __name__ == "__main__":
