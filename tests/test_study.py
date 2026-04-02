@@ -218,6 +218,8 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("/cards/1", cards_html)
         self.assertIn("Binary search", cards_html)
+        self.assertIn("created", cards_html)
+        self.assertNotIn("box 1", cards_html)
 
         status, _, detail_html = call_app(self.app, method="GET", path=f"/cards/{card_id}")
         self.assertEqual(status, "200 OK")

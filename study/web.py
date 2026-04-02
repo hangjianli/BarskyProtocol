@@ -176,7 +176,7 @@ class StudyWebApp:
                 <a href="/cards/{int(card['id'])}">{html.escape(str(card['title']))}</a>
                 <small class="muted">· {html.escape(str(card['type']))} · {html.escape(str(card['topic'] or '-'))}</small>
               </span>
-              <strong>box {int(card['box'])}</strong>
+              <strong>created {html.escape(str(card['created_at']))}</strong>
             </li>
             """
             for card in cards
