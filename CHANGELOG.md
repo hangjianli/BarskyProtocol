@@ -10,6 +10,17 @@ identity.
 - Added a regenerate flow in the notebook import UI so users can rebuild the draft after changing split mode.
 - Stored import options in card provenance and documented the behavior in `DESIGN.md`.
 
+## `58cc824` - `docs: add retrospective changelog`
+
+- Added `CHANGELOG.md` to track the repository's milestone commits in plain language.
+- Captured the rewritten commit history so later contributors can understand what each shipped milestone introduced.
+
+## `02526fd` - `fix: keep aggressive notebook splits standalone`
+
+- Fixed aggressive notebook imports so later candidates keep earlier support code they depend on.
+- Preserved support context in both `solution.py` and `answer.py` for aggressively split exercise cards.
+- Added regression coverage to ensure later imported candidates remain standalone.
+
 ## `374d1a6` - `feat: add recommendations and mixed review`
 
 - Added a deterministic recommendations page driven by stored failures and incompletes.

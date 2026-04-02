@@ -24,12 +24,14 @@ Tests use `unittest`. Add or update tests for any behavior change in scheduling,
 Follow the existing commit style: concise, imperative, and scoped, e.g. `feat: add phase 1 web study workflow` or `chore: bootstrap v1 study CLI`. Keep commits focused. For pull requests, include a short summary, user-visible behavior changes, verification steps, and screenshots for UI changes. Link the relevant design section in `DESIGN.md` when the change implements or revises architecture.
 
 Future feature work should not be developed directly on `main`. Start from `main`, create a dedicated feature branch, implement the work there, then raise a pull request and conduct code review before merging.
+When PR review comments are actionable and unambiguous, read them and address them proactively without waiting for additional user supervision.
 
 ## Design Discipline
 If you make a major design decision, update `DESIGN.md` before implementing it. Treat the design doc as the source of truth for architecture, workflows, and product behavior changes, especially for scheduling, grading, import pipelines, and UI flow.
 
 ## Delivery Discipline
 After a major implementation milestone, create a commit and check in the change. Keep the commit focused and use the repository's existing commit style so the history stays readable.
+After addressing PR review issues and making the follow-up commits, document what changed. Update the relevant design, changelog, PR discussion, or repo docs as needed so the review trail stays understandable.
 
 ## Security & Configuration Tips
 Do not commit secrets, auth files, or `.barsky/study.db`. Keep local auth in user-level config such as `~/.codex/auth.json`, and keep repository config in `config.toml` free of sensitive values.
