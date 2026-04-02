@@ -601,10 +601,9 @@ def dashboard_stats(config: StudyConfig) -> DashboardStats:
     )
 
 
-def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> sqlite3.Row | None:
+def start_review_attempt(config: StudyConfig, *, card_type: str | None = "concept") -> sqlite3.Row | None:
     with managed_connection(config) as connection:
-        active = connection.execute(
-            """
+        active_query = """
             SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
                    cards.asset_path, concept_cards.prompt, concept_cards.answer,
                    exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
@@ -613,17 +612,17 @@ def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> 
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
             LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
             WHERE review_attempts.status = 'active'
-              AND review_attempts.card_type = ?
-            ORDER BY review_attempts.started_at ASC
-            LIMIT 1
-            """,
-            (card_type,),
-        ).fetchone()
+        """
+        active_params: list[object] = []
+        if card_type is not None:
+            active_query += " AND review_attempts.card_type = ?"
+            active_params.append(card_type)
+        active_query += " ORDER BY review_attempts.started_at ASC LIMIT 1"
+        active = connection.execute(active_query, active_params).fetchone()
         if active is not None:
             return active
 
-        next_card = connection.execute(
-            """
+        card_query = """
             SELECT cards.*,
                    concept_cards.prompt,
                    concept_cards.answer,
@@ -633,13 +632,14 @@ def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> 
             FROM cards
             LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
             LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
-            WHERE cards.type = ?
-              AND cards.next_review_at <= ?
-            ORDER BY cards.next_review_at ASC, cards.id ASC
-            LIMIT 1
-            """,
-            (card_type, to_iso(utc_now())),
-        ).fetchone()
+            WHERE cards.next_review_at <= ?
+        """
+        card_params: list[object] = [to_iso(utc_now())]
+        if card_type is not None:
+            card_query += " AND cards.type = ?"
+            card_params.append(card_type)
+        card_query += " ORDER BY cards.next_review_at ASC, cards.id ASC LIMIT 1"
+        next_card = connection.execute(card_query, card_params).fetchone()
         if next_card is None:
             return None
 
@@ -649,7 +649,7 @@ def start_review_attempt(config: StudyConfig, *, card_type: str = "concept") -> 
             INSERT INTO review_attempts (card_id, card_type, status, started_at)
             VALUES (?, ?, 'active', ?)
             """,
-            (int(next_card["id"]), card_type, started_at),
+            (int(next_card["id"]), str(next_card["type"]), started_at),
         )
         attempt_id = int(cursor.lastrowid)
         return connection.execute(

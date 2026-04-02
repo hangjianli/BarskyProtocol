@@ -157,10 +157,10 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, _, dashboard_html = call_app(self.app, method="GET", path="/")
         self.assertEqual(status, "200 OK")
-        self.assertIn("Start Concept Review", dashboard_html)
+        self.assertIn("Start Review", dashboard_html)
         self.assertIn("Due now", dashboard_html)
 
-        status, headers, _ = call_app(self.app, method="GET", path="/review")
+        status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed")
         self.assertEqual(status, "303 See Other")
         review_path = headers["Location"]
         self.assertRegex(review_path, r"^/review/\d+$")
@@ -245,6 +245,46 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Weak Topics", body)
         self.assertIn("High-Lapse Cards", body)
         self.assertIn("Repeated Incompletes", body)
+
+    def test_recommendations_page_surfaces_actions_from_failures(self) -> None:
+        for title in ("Async cancellation", "Async shielding"):
+            add_concept_card(
+                self.config,
+                title=title,
+                prompt="What happens when a task is cancelled?",
+                answer="It raises CancelledError at the next await point.",
+                topic="asyncio",
+            )
+            attempt = start_review_attempt(self.config, card_type="concept")
+            complete_concept_attempt(self.config, attempt_id=int(attempt["id"]), result="fail")
+
+        status, _, body = call_app(self.app, method="GET", path="/recommendations")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Recommendations", body)
+        self.assertIn("Pause new", body)
+        self.assertIn("asyncio", body)
+
+    def test_mixed_review_can_select_exercise_card(self) -> None:
+        files = scaffold_exercise_assets(
+            self.config,
+            title="Binary Search Drill",
+            topic="algorithms",
+            prompt="Implement binary search.",
+        )
+        add_exercise_card(
+            self.config,
+            title="Binary Search Drill",
+            topic="algorithms",
+            tags=["exercise"],
+            source="",
+            files=files,
+        )
+
+        status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed")
+        self.assertEqual(status, "303 See Other")
+        status, _, body = call_app(self.app, method="GET", path=headers["Location"])
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Exercise Review", body)
 
     def test_new_exercise_page_creates_card_and_assets(self) -> None:
         status, _, body = call_app(

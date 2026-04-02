@@ -10,7 +10,7 @@ from typing import Callable
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
 
-from study.analytics import build_pattern_snapshot
+from study.analytics import build_pattern_snapshot, build_recommendations
 from study.config import StudyConfig
 from study.exercises import cleanup_workspace, create_workspace, scaffold_exercise_assets
 from study.grading import GradingError, grade_concept_answer
@@ -78,6 +78,8 @@ class StudyWebApp:
             response = self.handle_import_notebook_create(environ)
         elif method == "GET" and path == "/patterns":
             response = self.handle_patterns()
+        elif method == "GET" and path == "/recommendations":
+            response = self.handle_recommendations()
         elif method == "GET" and path == "/review":
             response = self.handle_start_review(query)
         elif method == "GET" and re.fullmatch(r"/review/\d+", path):
@@ -111,7 +113,8 @@ class StudyWebApp:
           <h1>BarskyProtocol</h1>
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
           <div class="actions">
-            <a class="button" href="/review?mode=concept">Start Concept Review</a>
+            <a class="button" href="/review?mode=mixed">Start Review</a>
+            <a class="button button-secondary" href="/review?mode=concept">Concept Queue</a>
             <a class="button button-secondary" href="/review?mode=exercise">Start Exercise Review</a>
             <a class="button button-secondary" href="/cards/new/concept">Add Concept Card</a>
             <a class="button button-secondary" href="/cards/new/exercise">Add Exercise</a>
@@ -270,6 +273,30 @@ class StudyWebApp:
         </section>
         """
         return self.html_page("Patterns", content)
+
+    def handle_recommendations(self) -> Response:
+        recommendations = build_recommendations(self.config)
+        items = "".join(
+            f"""
+            <li>
+              <span>
+                <strong>{html.escape(recommendation.category)}</strong><br>
+                {html.escape(recommendation.action)}
+                <small class="muted"><br>{html.escape(recommendation.evidence)}</small>
+              </span>
+            </li>
+            """
+            for recommendation in recommendations
+        ) or "<li><span>No recommendations yet. Review more cards to generate evidence.</span></li>"
+
+        content = f"""
+        <section class="panel">
+          <h1>Recommendations</h1>
+          <p class="muted">Direct next steps derived from observed review failures and incompletes.</p>
+          <ul class="list">{items}</ul>
+        </section>
+        """
+        return self.html_page("Recommendations", content)
 
     def handle_new_concept_form(self, errors: list[str] | None = None, values: dict[str, str] | None = None) -> Response:
         values = values or {}
@@ -553,10 +580,10 @@ class StudyWebApp:
         return self.redirect(f"/cards/{created_ids[0]}")
 
     def handle_start_review(self, query: dict[str, list[str]]) -> Response:
-        mode = query.get("mode", ["concept"])[0]
-        if mode not in {"concept", "exercise"}:
-            mode = "concept"
-        card_type = "concept" if mode == "concept" else "code_exercise"
+        mode = query.get("mode", ["mixed"])[0]
+        if mode not in {"mixed", "concept", "exercise"}:
+            mode = "mixed"
+        card_type = None if mode == "mixed" else ("concept" if mode == "concept" else "code_exercise")
         attempt = start_review_attempt(self.config, card_type=card_type)
         if attempt is None:
             content = """
@@ -774,7 +801,7 @@ class StudyWebApp:
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
         <section class="actions">
-          <a class="button" href="/review">Continue Review</a>
+          <a class="button" href="/review?mode=mixed">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
