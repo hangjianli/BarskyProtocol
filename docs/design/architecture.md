@@ -39,6 +39,8 @@ cards/
 - `/review`
 - `/review/:attempt_id`
 - `/cards`
+- `/cards/:card_id`
+- `/cards/:card_id/delete`
 - `/cards/new/concept`
 - `/cards/new/exercise`
 - `/cards/import-notebook`
@@ -56,6 +58,8 @@ flowchart TD
     C --> G["/cards/new/exercise"]
     C --> H["/cards/import-notebook"]
     C --> J["/cards/import-text"]
+    C --> K["/cards/:card_id"]
+    K --> L["/cards/:card_id/delete"]
     B --> I["/review/:attempt_id"]
 ```
 

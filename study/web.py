@@ -24,6 +24,7 @@ from study.notebooks import (
 )
 from study.storage import (
     add_concept_card,
+    delete_card,
     add_exercise_card,
     complete_concept_attempt,
     complete_exercise_attempt,
@@ -63,6 +64,8 @@ class StudyWebApp:
             response = self.handle_cards()
         elif method == "GET" and re.fullmatch(r"/cards/\d+", path):
             response = self.handle_card_detail(int(path.rsplit("/", 1)[-1]))
+        elif method == "POST" and re.fullmatch(r"/cards/\d+/delete", path):
+            response = self.handle_card_delete(int(path.split("/")[-2]))
         elif method == "GET" and path == "/cards/new/concept":
             response = self.handle_new_concept_form()
         elif method == "POST" and path == "/cards/new/concept":
@@ -251,11 +254,23 @@ class StudyWebApp:
         </section>
         {prompt_block}
         <section class="panel">
+          <h2>Card Actions</h2>
+          <p class="muted">Delete this card if it should no longer be part of the study set.</p>
+          <form method="post" action="/cards/{card.id}/delete" class="actions">
+            <button class="button button-danger" type="submit" onclick="return confirm('Delete this card and its review history?');">Delete Card</button>
+          </form>
+        </section>
+        <section class="panel">
           <h2>Recent Reviews</h2>
           <ul class="list">{review_rows}</ul>
         </section>
         """
         return self.html_page(card.title, content)
+
+    def handle_card_delete(self, card_id: int) -> Response:
+        if not delete_card(self.config, card_id):
+            return self.text("404 Not Found", status="404 Not Found")
+        return self.redirect("/cards")
 
     def handle_patterns(self) -> Response:
         snapshot = build_pattern_snapshot(self.config)

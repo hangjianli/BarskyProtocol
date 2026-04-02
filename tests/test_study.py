@@ -18,6 +18,7 @@ from study.storage import (
     add_exercise_card,
     complete_concept_attempt,
     dashboard_stats,
+    delete_card,
     due_cards,
     ensure_storage,
     get_card_detail,
@@ -219,6 +220,62 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("Recent Reviews", detail_html)
         self.assertIn("Reveal answer", detail_html)
+        self.assertIn("Delete Card", detail_html)
+
+    def test_delete_concept_card_removes_it_from_the_study_set(self) -> None:
+        card_id = add_concept_card(
+            self.config,
+            title="Delete Me",
+            prompt="What should happen?",
+            answer="The card should be deleted.",
+            topic="testing",
+        )
+
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path=f"/cards/{card_id}/delete",
+            body="",
+        )
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(headers["Location"], "/cards")
+        self.assertIsNone(get_card_detail(self.config, card_id))
+
+    def test_delete_exercise_card_removes_assets_and_workspaces(self) -> None:
+        files = scaffold_exercise_assets(
+            self.config,
+            title="Delete Exercise",
+            topic="python",
+            prompt="Implement delete_me().",
+        )
+        card_id = add_exercise_card(
+            self.config,
+            title="Delete Exercise",
+            topic="python",
+            tags=["exercise"],
+            source="",
+            files=files,
+        )
+
+        attempt = start_review_attempt(self.config, card_type="code_exercise")
+        self.assertIsNotNone(attempt)
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path=f"/review/{int(attempt['id'])}/workspace",
+            body="action=create",
+        )
+        self.assertEqual(status, "303 See Other")
+        attempt_view = get_exercise_attempt_view(self.config, int(attempt["id"]))
+        self.assertIsNotNone(attempt_view.workspace_path)
+        asset_dir = Path(files.asset_dir)
+        workspace_path = Path(attempt_view.workspace_path)
+
+        deleted = delete_card(self.config, card_id)
+        self.assertTrue(deleted)
+        self.assertIsNone(get_card_detail(self.config, card_id))
+        self.assertFalse(asset_dir.exists())
+        self.assertFalse(workspace_path.exists())
 
     def test_patterns_page_surfaces_failures_and_incompletes(self) -> None:
         add_concept_card(

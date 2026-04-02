@@ -82,3 +82,17 @@ do not edit it directly.
 4. Reschedule the card.
 5. Analyze failures.
 6. Improve future study material.
+
+## Card Management
+
+Cards should be manageable from the UI.
+
+Delete behavior:
+
+1. Delete the card row and all dependent review history through the database.
+2. Delete any exercise asset directory owned by the card.
+3. Delete retained temp workspaces associated with that card.
+4. Preserve external source files and managed source snapshots by default.
+
+Deletion should be explicit and user-initiated. It should not remove original
+source provenance files outside the card's owned exercise assets.

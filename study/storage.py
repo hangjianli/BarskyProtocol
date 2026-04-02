@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import shutil
 from typing import Iterable
 
 from study.config import StudyConfig
@@ -558,6 +559,47 @@ def recent_reviews_for_card(config: StudyConfig, card_id: int, *, limit: int = 1
                 (card_id, limit),
             )
         )
+
+
+def delete_card(config: StudyConfig, card_id: int) -> bool:
+    with managed_connection(config) as connection:
+        card = connection.execute(
+            "SELECT type, asset_path FROM cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if card is None:
+            return False
+
+        # Collect retained workspace paths before deleting the card rows.
+        workspace_rows = connection.execute(
+            """
+            SELECT workspace_path
+            FROM review_attempts
+            WHERE card_id = ? AND workspace_path IS NOT NULL
+            UNION
+            SELECT workspace_path
+            FROM reviews
+            WHERE card_id = ? AND workspace_path IS NOT NULL
+            """,
+            (card_id, card_id),
+        ).fetchall()
+        workspace_paths = {
+            str(row["workspace_path"])
+            for row in workspace_rows
+            if row["workspace_path"]
+        }
+
+        asset_path = str(card["asset_path"]) if card["asset_path"] else ""
+        connection.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+
+    # Cleanup happens after the transaction so DB deletion is not coupled to fs cleanup.
+    for workspace_path in workspace_paths:
+        shutil.rmtree(workspace_path, ignore_errors=True)
+
+    if str(card["type"]) == "code_exercise" and asset_path:
+        shutil.rmtree(asset_path, ignore_errors=True)
+
+    return True
 
 
 def dashboard_stats(config: StudyConfig) -> DashboardStats:

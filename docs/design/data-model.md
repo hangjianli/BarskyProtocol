@@ -120,3 +120,13 @@ Imported cards should keep source provenance explicitly, including:
 - which import options were used
 
 That provenance exists to help debugging, tracing, and future re-imports.
+
+## Deletion Rules
+
+When a card is deleted:
+
+- delete the `cards` row
+- rely on foreign-key cascades for dependent concept, exercise, review, and attempt rows
+- delete the owned exercise asset directory if the card is a `code_exercise`
+- delete retained workspace directories referenced by that card
+- do not delete external source files or shared managed source snapshots
