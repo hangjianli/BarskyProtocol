@@ -1,5 +1,11 @@
 [study]
 data_dir = ".barsky"
 database = ".barsky/study.db"
+scheduler = "leitner_fallback"
+concept_scheduler = "leitner_fallback"
+exercise_scheduler = "leitner_fallback"
 box_intervals = [1, 2, 4, 8, 16]
 review_order = "oldest-first"
+cards_dir = "cards"
+workspaces_dir = ".barsky/workspaces"
+llm_validator = "openai"

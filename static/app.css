@@ -1,0 +1,200 @@
+:root {
+  color-scheme: light;
+  --bg: #f7f4ed;
+  --panel: #fffdf8;
+  --text: #1f1f1b;
+  --muted: #5e5a52;
+  --border: #ded7ca;
+  --accent: #1d4ed8;
+  --danger: #b42318;
+  --shadow: 0 1px 0 rgba(31, 31, 27, 0.04);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #f4efe5 0%, var(--bg) 100%);
+  color: var(--text);
+}
+
+.shell {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 18px 48px;
+}
+
+.nav {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 28px;
+  font-size: 0.95rem;
+}
+
+.nav a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.nav a:hover {
+  color: var(--text);
+}
+
+.content {
+  display: grid;
+  gap: 18px;
+}
+
+.hero h1,
+.panel h1,
+.panel h2 {
+  margin-top: 0;
+}
+
+.hero {
+  padding: 8px 0 4px;
+}
+
+.panel {
+  background: color-mix(in srgb, var(--panel) 92%, white 8%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.panel-error {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border) 65%);
+}
+
+.grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.stats {
+  display: grid;
+  gap: 12px;
+}
+
+.stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent 30%);
+}
+
+.stats dt,
+.meta,
+.muted,
+.eyebrow {
+  color: var(--muted);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.82rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  text-decoration: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button-secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.button-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.form-stack {
+  display: grid;
+  gap: 14px;
+}
+
+label {
+  display: grid;
+  gap: 8px;
+}
+
+input,
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fffdfa;
+  color: var(--text);
+  font: inherit;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.answer-block {
+  margin-top: 14px;
+}
+
+.status {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #ebe6da;
+}
+
+.status-pass {
+  background: #d9f2e3;
+}
+
+.status-fail {
+  background: #f7d8d4;
+}
+
+.status-incomplete {
+  background: #f3e6c9;
+}
+
+.errors {
+  margin: 0;
+  padding-left: 18px;
+}

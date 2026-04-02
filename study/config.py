@@ -14,8 +14,14 @@ class StudyConfig:
     config_path: Path
     data_dir: Path
     database: Path
+    cards_dir: Path
+    workspaces_dir: Path
     box_intervals: dict[int, int]
+    scheduler: str
+    concept_scheduler: str
+    exercise_scheduler: str
     review_order: str
+    llm_validator: str
 
 
 def _resolve_path(base_dir: Path, raw_path: str) -> Path:
@@ -53,17 +59,23 @@ def load_config(start: Path | None = None) -> StudyConfig:
 
     study = raw_config.get("study", {})
     base_dir = config_path.parent
-
     raw_intervals = study.get("box_intervals", list(DEFAULT_INTERVALS.values()))
     if len(raw_intervals) != 5:
         raise ValueError("`study.box_intervals` must contain exactly 5 values.")
 
     box_intervals = {index + 1: days for index, days in enumerate(raw_intervals)}
+    data_dir = _resolve_path(base_dir, study.get("data_dir", ".barsky"))
 
     return StudyConfig(
         config_path=config_path,
-        data_dir=_resolve_path(base_dir, study.get("data_dir", ".barsky")),
+        data_dir=data_dir,
         database=_resolve_path(base_dir, study.get("database", ".barsky/study.db")),
+        cards_dir=_resolve_path(base_dir, study.get("cards_dir", "cards")),
+        workspaces_dir=_resolve_path(base_dir, study.get("workspaces_dir", ".barsky/workspaces")),
         box_intervals=box_intervals,
+        scheduler=study.get("scheduler", "leitner_fallback"),
+        concept_scheduler=study.get("concept_scheduler", "leitner_fallback"),
+        exercise_scheduler=study.get("exercise_scheduler", "leitner_fallback"),
         review_order=study.get("review_order", "oldest-first"),
+        llm_validator=study.get("llm_validator", "openai"),
     )
