@@ -457,8 +457,13 @@ class StudyWebApp:
         contract_text = self._first(form, "contract_text")
         try:
             created_ids = import_cards_from_contract(self.config, contract_text)
-        except (CardContractError, FileExistsError) as exc:
+        except CardContractError as exc:
             return self.handle_import_text_form(errors=[str(exc)], values={"contract_text": contract_text})
+        except FileExistsError as exc:
+            return self.handle_import_text_form(
+                errors=[f"An exercise asset already exists for this card import: {exc.filename or exc}"],
+                values={"contract_text": contract_text},
+            )
 
         if not created_ids:
             return self.handle_import_text_form(
@@ -1170,7 +1175,11 @@ class StudyWebApp:
         return str(resolved_path), draft.source_mode, draft.source_label, source_kind, source_text
 
     def _normalized_split_mode(self, raw_value: str) -> str:
-        return raw_value if raw_value in {"balanced", "aggressive"} else self.config.notebook_split_mode
+        if raw_value in {"balanced", "aggressive"}:
+            return raw_value
+        if self.config.notebook_split_mode in {"balanced", "aggressive"}:
+            return self.config.notebook_split_mode
+        return "balanced"
 
     def _import_notebook_script(self) -> str:
         return """

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 
 from study.config import StudyConfig
 from study.exercises import scaffold_exercise_assets
-from study.storage import add_concept_card, add_exercise_card
+from study.storage import add_concept_card, add_exercise_card, delete_card
 
 
 class CardContractError(ValueError):
@@ -51,14 +53,44 @@ class ExerciseContractCard:
 def import_cards_from_contract(config: StudyConfig, contract_text: str) -> list[int]:
     cards = parse_card_contract(contract_text)
     created_ids: list[int] = []
-    for card in cards:
-        if isinstance(card, ConceptContractCard):
+    created_asset_dirs: list[Path] = []
+    try:
+        for card in cards:
+            if isinstance(card, ConceptContractCard):
+                created_ids.append(
+                    add_concept_card(
+                        config,
+                        title=card.title,
+                        prompt=card.prompt,
+                        answer=card.answer,
+                        topic=card.topic,
+                        tags=card.tags,
+                        source=card.source,
+                        source_path=card.source_path,
+                        source_mode=card.source_mode,
+                        source_label=card.source_label,
+                        source_kind=card.source_kind,
+                        source_cell_spec=card.source_cell_spec,
+                        source_import_options=card.source_import_options,
+                    )
+                )
+                continue
+
+            files = scaffold_exercise_assets(
+                config,
+                title=card.title,
+                topic=card.topic,
+                prompt=card.prompt,
+                slug=card.slug or None,
+                answer_body=card.answer_py,
+                solution_body=card.solution_py,
+                tests_body=card.tests_py,
+            )
+            created_asset_dirs.append(files.asset_dir)
             created_ids.append(
-                add_concept_card(
+                add_exercise_card(
                     config,
                     title=card.title,
-                    prompt=card.prompt,
-                    answer=card.answer,
                     topic=card.topic,
                     tags=card.tags,
                     source=card.source,
@@ -68,36 +100,16 @@ def import_cards_from_contract(config: StudyConfig, contract_text: str) -> list[
                     source_kind=card.source_kind,
                     source_cell_spec=card.source_cell_spec,
                     source_import_options=card.source_import_options,
+                    files=files,
                 )
             )
-            continue
-
-        files = scaffold_exercise_assets(
-            config,
-            title=card.title,
-            topic=card.topic,
-            prompt=card.prompt,
-            slug=card.slug or None,
-            answer_body=card.answer_py,
-            solution_body=card.solution_py,
-            tests_body=card.tests_py,
-        )
-        created_ids.append(
-            add_exercise_card(
-                config,
-                title=card.title,
-                topic=card.topic,
-                tags=card.tags,
-                source=card.source,
-                source_path=card.source_path,
-                source_mode=card.source_mode,
-                source_label=card.source_label,
-                source_kind=card.source_kind,
-                source_cell_spec=card.source_cell_spec,
-                source_import_options=card.source_import_options,
-                files=files,
-            )
-        )
+    except Exception:
+        # Multi-card imports should not leave a partially created deck behind.
+        for card_id in reversed(created_ids):
+            delete_card(config, card_id)
+        for asset_dir in created_asset_dirs:
+            shutil.rmtree(asset_dir, ignore_errors=True)
+        raise
     return created_ids
 
 

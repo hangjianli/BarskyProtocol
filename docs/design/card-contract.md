@@ -166,3 +166,7 @@ The web app should expose a text import page where the user can:
 
 This flow complements source import. It does not replace notebook or Python
 source parsing.
+
+Multi-card contract imports should be atomic. If any later card fails to
+create, the importer should roll back earlier cards from the same payload so
+the user does not end up with a half-imported deck.

@@ -178,7 +178,7 @@ def load_import_draft(config: StudyConfig, draft_id: str) -> NotebookImportDraft
         source_title=str(payload.get("source_title", payload.get("notebook_title", payload["source_label"]))),
         prose_sections=int(payload.get("prose_sections", payload.get("markdown_cells", 0))),
         code_sections=int(payload.get("code_sections", payload.get("code_cells", 0))),
-        candidates=[NotebookCandidate(**candidate) for candidate in payload["candidates"]],
+        candidates=[_load_candidate(candidate) for candidate in payload["candidates"]],
     )
 
 
@@ -301,7 +301,12 @@ def _parse_balanced_candidates(cells: list[dict], *, default_topic: str = "") ->
             current_indexes = []
             return
 
-        title = _infer_code_title(code, len(candidates) + 1) if _infer_top_level_names(code) else (current_title or _infer_code_title(code, len(candidates) + 1))
+        title = _build_candidate_title(
+            code,
+            fallback_index=len(candidates) + 1,
+            section_title=current_title,
+            existing_titles=[candidate.title for candidate in candidates],
+        )
         cell_spec = _format_cell_spec(current_indexes)
         prompt = _build_prompt(title, current_notes, code, cell_spec, aggressive=False)
         names = _infer_top_level_names(code)
@@ -386,7 +391,12 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
         support_indexes = [value for block in support_blocks for value in block.indexes]
         cell_indexes = support_indexes + [index]
         notes = list(current_notes)
-        title = _infer_code_title(raw_source, len(candidates) + 1)
+        title = _build_candidate_title(
+            raw_source,
+            fallback_index=len(candidates) + 1,
+            section_title=current_title,
+            existing_titles=[candidate.title for candidate in candidates],
+        )
         cell_spec = _format_cell_spec(cell_indexes)
         names = _infer_top_level_names(raw_source)
         full_solution = "\n\n".join(block for block in [*support_code, raw_source] if block.strip()).strip()
@@ -428,7 +438,10 @@ def _parse_balanced_python_candidates(
         return []
 
     names = _infer_top_level_names(code)
-    title = _infer_python_title(code, source_label, fallback_index=1)
+    title = _deduplicate_title(
+        _infer_python_title(code, source_label, fallback_index=1),
+        [],
+    )
     line_spec = _format_line_spec(1, len(source_text.splitlines()))
     return [
         NotebookCandidate(
@@ -464,7 +477,10 @@ def _parse_aggressive_python_candidates(
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             support_blocks = _resolve_support_blocks(node_source, prior_blocks)
             support_code = [block.code for block in support_blocks]
-            title = _infer_python_title(node_source, source_label, fallback_index=len(candidates) + 1)
+            title = _deduplicate_title(
+                _infer_python_title(node_source, source_label, fallback_index=len(candidates) + 1),
+                [candidate.title for candidate in candidates],
+            )
             line_spec = _format_line_spec(node.lineno, getattr(node, "end_lineno", node.lineno))
             names = _infer_top_level_names(node_source)
             candidates.append(
@@ -516,7 +532,10 @@ def _build_python_fallback_candidate(
     if not code:
         return []
 
-    title = _infer_python_title(code, source_label, fallback_index=1)
+    title = _deduplicate_title(
+        _infer_python_title(code, source_label, fallback_index=1),
+        [],
+    )
     names = _infer_top_level_names(code)
     line_spec = _format_line_spec(1, len(source_text.splitlines()))
     return [
@@ -578,6 +597,31 @@ def _infer_python_title(code: str, source_label: str, *, fallback_index: int) ->
     return Path(source_label).stem or f"Python Exercise {fallback_index}"
 
 
+def _build_candidate_title(
+    code: str,
+    *,
+    fallback_index: int,
+    section_title: str,
+    existing_titles: list[str],
+) -> str:
+    inferred = _infer_code_title(code, fallback_index)
+    if section_title.strip():
+        title = f"{section_title.strip()} · {inferred}"
+    else:
+        title = inferred
+    return _deduplicate_title(title, existing_titles)
+
+
+def _deduplicate_title(title: str, existing_titles: list[str]) -> str:
+    if title not in existing_titles:
+        return title
+
+    suffix = 2
+    while f"{title} · Part {suffix}" in existing_titles:
+        suffix += 1
+    return f"{title} · Part {suffix}"
+
+
 def _infer_top_level_names(code: str) -> list[str]:
     try:
         tree = ast.parse(code)
@@ -597,6 +641,20 @@ def _build_support_block(code: str, *, indexes: list[int]) -> SupportBlock:
         indexes=indexes,
         provided_names=_provided_names(code),
         referenced_names=_referenced_names(code),
+    )
+
+
+def _load_candidate(candidate: dict) -> NotebookCandidate:
+    return NotebookCandidate(
+        title=str(candidate["title"]),
+        prompt=str(candidate["prompt"]),
+        topic=str(candidate.get("topic", "")),
+        tags=[str(tag).strip() for tag in candidate.get("tags", []) if str(tag).strip()],
+        solution_code=str(candidate["solution_code"]),
+        answer_template=str(candidate["answer_template"]),
+        tests_template=str(candidate["tests_template"]),
+        source_cell_spec=str(candidate.get("source_cell_spec", "")),
+        cell_indexes=[int(index) for index in candidate.get("cell_indexes", [])],
     )
 
 

@@ -87,6 +87,8 @@ The importer should:
 - separate runtime support context from visible study prompt context
 - preserve dependencies so generated exercises remain standalone
 - include only the support code the candidate actually depends on
+- preserve section headings when they help disambiguate otherwise similar exercises
+- deduplicate generated titles so default slug generation does not collide during import
 
 The generated prompt should describe the implementation task, not just repeat a
 chapter heading or file name.

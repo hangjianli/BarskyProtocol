@@ -5,6 +5,7 @@ import json
 import re
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import quote_plus
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from wsgiref.util import setup_testing_defaults
 
 from study.config import load_config
 from study.exercises import scaffold_exercise_assets
+from study.notebooks import load_import_draft
 from study.scheduler import fallback_schedule
 from study.storage import (
     add_concept_card,
@@ -24,6 +26,7 @@ from study.storage import (
     get_card_detail,
     get_exercise_attempt_view,
     get_review_attempt,
+    list_cards,
     start_review_attempt,
 )
 from study.web import StudyWebApp
@@ -431,6 +434,69 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Cannot import this contract yet", body)
         self.assertIn("requires a non-empty `prompt` field", body)
 
+    def test_import_text_contract_is_atomic_when_a_later_card_fails(self) -> None:
+        contract = (
+            'version = 1\n'
+            '\n'
+            '[[cards]]\n'
+            'type = "concept"\n'
+            'title = "Concept One"\n'
+            'prompt = """\n'
+            'Question?\n'
+            '"""\n'
+            'answer = """\n'
+            'Answer.\n'
+            '"""\n'
+            '\n'
+            '[[cards]]\n'
+            'type = "code_exercise"\n'
+            'title = "Adder"\n'
+            'topic = "python"\n'
+            'slug = "shared-slug"\n'
+            'prompt = """\n'
+            'Implement add(a, b).\n'
+            '"""\n'
+            'answer_py = """\n'
+            'raise NotImplementedError\n'
+            '"""\n'
+            'solution_py = """\n'
+            'def add(a, b):\n'
+            '    return a + b\n'
+            '"""\n'
+            'tests_py = """\n'
+            'import unittest\n'
+            '"""\n'
+            '\n'
+            '[[cards]]\n'
+            'type = "code_exercise"\n'
+            'title = "Adder Again"\n'
+            'topic = "python"\n'
+            'slug = "shared-slug"\n'
+            'prompt = """\n'
+            'Implement add(a, b) again.\n'
+            '"""\n'
+            'answer_py = """\n'
+            'raise NotImplementedError\n'
+            '"""\n'
+            'solution_py = """\n'
+            'def add(a, b):\n'
+            '    return a + b\n'
+            '"""\n'
+            'tests_py = """\n'
+            'import unittest\n'
+            '"""\n'
+        )
+
+        status, _, body = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-text",
+            body="contract_text=" + quote_plus(contract),
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("already exists", body)
+        self.assertEqual(list_cards(self.config), [])
+
     def test_exercise_review_creates_workspace_and_records_validation(self) -> None:
         files = scaffold_exercise_assets(
             self.config,
@@ -612,6 +678,31 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertTrue(Path(detail.source_path).is_file())
         self.assertEqual(detail.source_kind, "ipynb")
 
+    def test_import_preview_clamps_invalid_configured_split_mode(self) -> None:
+        broken_config = replace(self.config, notebook_split_mode="agresssive")
+        app = StudyWebApp(broken_config)
+        notebook_path = self.root / "split.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Split\n", "Small exercise.\n"]},
+                        {"cell_type": "code", "source": ["def one() -> int:\n", "    return 1\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, body = call_app(
+            app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(notebook_path))}&topic=test&source_label=split.ipynb",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn(">balanced<", body)
+
     def test_import_notebook_prefills_llm_suggested_topic_and_tags(self) -> None:
         notebook_path = self.root / "metadata.ipynb"
         notebook_path.write_text(
@@ -646,6 +737,40 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn('name="topic_0" value="nlp"', review_html)
         self.assertIn('name="tags_0" value="tokenizer, python, regex"', review_html)
+
+    def test_load_import_draft_backfills_missing_candidate_tags(self) -> None:
+        draft_path = self.config.imports_dir / "legacy.json"
+        draft_path.write_text(
+            json.dumps(
+                {
+                    "draft_id": "legacy",
+                    "source_mode": "external_path",
+                    "source_path": "/tmp/example.ipynb",
+                    "source_label": "example.ipynb",
+                    "topic": "legacy",
+                    "split_mode": "balanced",
+                    "notebook_title": "Example",
+                    "markdown_cells": 1,
+                    "code_cells": 1,
+                    "candidates": [
+                        {
+                            "title": "Legacy Candidate",
+                            "prompt": "Prompt",
+                            "topic": "legacy",
+                            "solution_code": "def one():\n    return 1\n",
+                            "answer_template": "raise NotImplementedError\n",
+                            "tests_template": "import unittest\n",
+                            "source_cell_spec": "cells 1-2",
+                            "cell_indexes": [1, 2],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        draft = load_import_draft(self.config, "legacy")
+        self.assertEqual(draft.candidates[0].tags, [])
 
     def test_import_notebook_can_regenerate_with_more_aggressive_split(self) -> None:
         notebook_path = self.root / "chapter.ipynb"
@@ -708,6 +833,56 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("def encode_text", second_solution)
         self.assertIn("Supporting context preserved", second_answer)
         self.assertIn("def split_words", second_answer)
+
+    def test_import_notebook_balanced_titles_keep_section_headings(self) -> None:
+        notebook_path = self.root / "balanced-titles.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Tokenizer A\n", "First section.\n"]},
+                        {"cell_type": "code", "source": ["def encode(text: str) -> list[str]:\n", "    return text.split()\n"]},
+                        {"cell_type": "markdown", "source": ["# Tokenizer B\n", "Second section.\n"]},
+                        {"cell_type": "code", "source": ["def encode(text: str) -> list[str]:\n", "    return text.split('-')\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(notebook_path))}&topic=llm&source_label=balanced-titles.ipynb&split_mode=balanced",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn('name="title_0" value="Tokenizer A · Reimplement encode"', review_html)
+        self.assertIn('name="title_1" value="Tokenizer B · Reimplement encode"', review_html)
+
+    def test_import_notebook_aggressive_titles_are_deduplicated_without_headings(self) -> None:
+        notebook_path = self.root / "aggressive-titles.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "code", "source": ["def encode(text: str) -> list[str]:\n", "    return text.split()\n"]},
+                        {"cell_type": "code", "source": ["def encode(text: str) -> list[str]:\n", "    return text.split('-')\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(notebook_path))}&topic=llm&source_label=aggressive-titles.ipynb&split_mode=aggressive",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn('name="title_0" value="Reimplement encode"', review_html)
+        self.assertIn('name="title_1" value="Reimplement encode · Part 2"', review_html)
 
     def test_aggressive_notebook_split_does_not_carry_independent_previous_code(self) -> None:
         notebook_path = self.root / "independent.ipynb"
