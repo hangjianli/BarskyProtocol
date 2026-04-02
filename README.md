@@ -1,82 +1,89 @@
-# BarskyProtocol
+<h1 align="center">BarskyProtocol</h1>
 
-`BarskyProtocol` is a local CLI study system built around a 5-box Leitner schedule.
-It is designed for anything you want to retain: technical concepts, vocabulary,
-code patterns, quiz misses, definitions, or debugging heuristics.
+<p align="center">
+  <strong>Local-first spaced repetition for concepts and coding drills.</strong>
+</p>
 
-## Study Model
+<p align="center">
+  <a href="#quick-start"><img alt="Quick Start" src="https://img.shields.io/badge/quick%20start-local%20web%20app-0f766e"></a>
+  <a href="#study-model"><img alt="Study Model" src="https://img.shields.io/badge/study%20model-concepts%20%2B%20code-1d4ed8"></a>
+  <a href="#card-sources"><img alt="Card Sources" src="https://img.shields.io/badge/import-.ipynb%20%2F%20.py%20%2F%20TOML-7c3aed"></a>
+  <a href="./DESIGN.md"><img alt="Design Docs" src="https://img.shields.io/badge/docs-design%20index-f59e0b"></a>
+</p>
 
-Each card starts in box 1 and becomes due immediately. During review:
+<p align="center">
+  <a href="./DESIGN.md">Design</a> ·
+  <a href="./CHANGELOG.md">Changelog</a> ·
+  <a href="./docs/design/card-contract.md">Card Contract</a>
+</p>
 
-- Correct answer: move up one box, up to box 5
-- Wrong answer: reset to box 1
-
-Default review intervals:
-
-- Box 1: 1 day
-- Box 2: 2 days
-- Box 3: 4 days
-- Box 4: 8 days
-- Box 5: 16 days
-
-This keeps the system simple, predictable, and easy to tune.
+BarskyProtocol is a local study tool for retaining technical material through spaced repetition. It supports both short concept cards and standalone Python reimplementation exercises, with a minimal web UI on `localhost`, local SQLite state, filesystem-backed exercise assets, and transparent scheduling explanations.
 
 ## Quick Start
 
-1. Initialize storage:
-
 ```bash
-python3 cli.py init
+uv venv .venv
+source .venv/bin/activate
+python cli.py init
+python cli.py serve
 ```
 
-2. Add a card:
+Open `http://127.0.0.1:8427`.
 
-```bash
-python3 cli.py add \
-  --topic python \
-  --tags "asyncio,concurrency" \
-  --prompt "What problem does a mutex solve?" \
-  --answer "It prevents multiple threads or tasks from mutating shared state at the same time."
-```
+## Study Model
 
-3. See what is due:
+BarskyProtocol is still a spaced repetition system at its core, but it extends a basic flashcard tool in two ways:
 
-```bash
-python3 cli.py due
-```
+- `concept` cards for prompt/answer recall
+- `code_exercise` cards for reimplementing Python from memory and validating it with tests
 
-4. Run a review session:
+Phase 1 uses a transparent Leitner-style fallback scheduler:
 
-```bash
-python3 cli.py review
-```
+- `pass`: move up one box
+- `fail`: reset to box 1
+- `incomplete`: keep the current box and reschedule soon
+
+The UI always shows why the next review date was chosen.
+
+## Card Sources
+
+You can create cards from several sources:
+
+- Manual concept and exercise forms in the web UI
+- Notebook or Python imports from external paths or managed copies
+- Paste-in TOML using the [card contract](./docs/design/card-contract.md)
+
+Imported coding drills become standalone exercise folders under `cards/` with:
+
+- `prompt.md`
+- `answer.py`
+- `solution.py`
+- `tests.py`
 
 ## Commands
 
-- `init`: create the SQLite database and schema
-- `add`: create a new study card
-- `due`: list cards due for review today
-- `review`: run an interactive review session for due cards
-- `list`: inspect recently created cards
-- `stats`: show queue and review counts
+- `python cli.py init`: initialize local storage and schema
+- `python cli.py serve`: run the local web app
+- `python cli.py add-concept`: add a concept card from the terminal
+- `python cli.py stats`: print a compact queue summary
 
-## Good Card Design
+## Repository Layout
 
-- Keep cards atomic: one concept per card
-- Prefer question/answer format over raw notes
-- Capture why something matters, not just syntax
-- Turn mistakes from quizzes or debugging sessions into cards quickly
-
-Examples:
-
-- "What does `git rebase` change compared to `git merge`?"
-- "Why can a stale closure break a React event handler?"
-- "When should I use `asyncio.gather()`?"
+- `study/`: application code
+- `templates/`: server-rendered HTML
+- `static/`: minimal CSS
+- `tests/`: `unittest` coverage
+- `cards/`: tracked exercise assets
+- `docs/design/`: detailed design references
 
 ## Configuration
 
-The CLI reads [config.toml](/Users/hangjianli/Projects/BarskyProtocol/config.toml) from the current
-directory or one of its parents. You can override the path with
-`BARSKY_CONFIG=/path/to/config.toml`.
+The app reads [config.toml](./config.toml) from the current directory or one of its parents. Override it with `BARSKY_CONFIG=/path/to/config.toml`.
 
-Storage is local and uses SQLite by default.
+Important paths:
+
+- `study.database`
+- `study.cards_dir`
+- `study.sources_dir`
+- `study.workspaces_dir`
+- `study.llm_auth_file`
