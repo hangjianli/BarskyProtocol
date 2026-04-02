@@ -8,4 +8,6 @@ box_intervals = [1, 2, 4, 8, 16]
 review_order = "oldest-first"
 cards_dir = "cards"
 workspaces_dir = ".barsky/workspaces"
-llm_validator = "openai"
+llm_validator = "codex_oauth"
+llm_model = "gpt-4.1-mini"
+llm_auth_file = "~/.codex/auth.json"

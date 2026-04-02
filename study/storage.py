@@ -506,6 +506,8 @@ def complete_concept_attempt(
     attempt_id: int,
     result: str,
     review_duration_seconds: int | None = None,
+    validator_summary: str | None = None,
+    failure_reason: str | None = None,
 ) -> ReviewOutcome:
     if result not in {"pass", "fail", "incomplete"}:
         raise ValueError("result must be `pass`, `fail`, or `incomplete`")
@@ -572,9 +574,10 @@ def complete_concept_attempt(
             """
             INSERT INTO reviews (
                 card_id, reviewed_at, result, prior_box, new_box, next_review_at,
-                review_duration_seconds, scheduler_name, reason_codes, reason_summary,
+                review_duration_seconds, failure_reason, validator_summary,
+                scheduler_name, reason_codes, reason_summary,
                 previous_interval_days, new_interval_days
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(attempt["card_id"]),
@@ -584,6 +587,8 @@ def complete_concept_attempt(
                 schedule.new_box,
                 schedule.next_review_at,
                 review_duration_seconds,
+                failure_reason,
+                validator_summary,
                 schedule.scheduler_name,
                 json.dumps(list(schedule.reason_codes)),
                 schedule.reason_summary,

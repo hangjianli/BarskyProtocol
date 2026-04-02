@@ -11,6 +11,7 @@ from wsgiref.simple_server import make_server
 
 from study.analytics import build_pattern_snapshot
 from study.config import StudyConfig
+from study.grading import GradingError, grade_concept_answer
 from study.storage import (
     add_concept_card,
     complete_concept_attempt,
@@ -293,11 +294,20 @@ class StudyWebApp:
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
 
+        return self.render_review_page(attempt)
+
+    def render_review_page(
+        self,
+        attempt: object,
+        *,
+        errors: list[str] | None = None,
+        user_answer: str = "",
+    ) -> Response:
         if str(attempt["status"]) == "completed":
             content = f"""
             <section class="panel">
               <h1>Review Completed</h1>
-              <p class="muted">Attempt {attempt_id} has already been recorded as {html.escape(str(attempt['result']))}.</p>
+              <p class="muted">Attempt {int(attempt['id'])} has already been recorded as {html.escape(str(attempt['result']))}.</p>
               <div class="actions">
                 <a class="button" href="/review">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
@@ -306,7 +316,16 @@ class StudyWebApp:
             """
             return self.html_page("Review Completed", content)
 
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = (
+                f'<section class="panel panel-error"><h2>Cannot grade this answer yet</h2>'
+                f'<ul class="errors">{error_items}</ul></section>'
+            )
+
         content = f"""
+        {error_html}
         <section class="panel">
           <p class="eyebrow">Concept Review</p>
           <h1>{html.escape(str(attempt['title']))}</h1>
@@ -315,17 +334,15 @@ class StudyWebApp:
         <section class="panel">
           <h2>Prompt</h2>
           <p>{html.escape(str(attempt['prompt']))}</p>
-          <details class="answer-block">
-            <summary>Reveal answer</summary>
-            <p>{html.escape(str(attempt['answer']))}</p>
-          </details>
         </section>
         <section class="panel">
-          <h2>Record Result</h2>
-          <form method="post" action="/review/{attempt_id}/result" class="actions">
-            <button class="button" type="submit" name="result" value="pass">Pass</button>
-            <button class="button button-danger" type="submit" name="result" value="fail">Fail</button>
-            <button class="button button-secondary" type="submit" name="result" value="incomplete">Incomplete</button>
+          <h2>Your Answer</h2>
+          <form method="post" action="/review/{int(attempt['id'])}/result" class="form-stack">
+            {self._textarea("user_answer", "Type your answer before grading", user_answer, rows=8)}
+            <div class="actions">
+              <button class="button" type="submit" name="action" value="grade">Grade with LLM</button>
+              <button class="button button-secondary" type="submit" name="action" value="incomplete">Mark Incomplete</button>
+            </div>
           </form>
         </section>
         """
@@ -333,8 +350,47 @@ class StudyWebApp:
 
     def handle_review_result(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
-        result = self._first(form, "result")
-        outcome = complete_concept_attempt(self.config, attempt_id=attempt_id, result=result)
+        action = self._first(form, "action")
+        attempt = get_review_attempt(self.config, attempt_id)
+        if attempt is None:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        if action == "incomplete":
+            outcome = complete_concept_attempt(self.config, attempt_id=attempt_id, result="incomplete")
+            grader_summary = "The attempt was marked incomplete without grading."
+            submitted_answer = ""
+            model_name = "manual"
+        else:
+            submitted_answer = self._first(form, "user_answer").strip()
+            if not submitted_answer:
+                return self.render_review_page(
+                    attempt,
+                    errors=["Type an answer before requesting grading."],
+                    user_answer=submitted_answer,
+                )
+            try:
+                grade = grade_concept_answer(
+                    self.config,
+                    prompt=str(attempt["prompt"]),
+                    reference_answer=str(attempt["answer"]),
+                    user_answer=submitted_answer,
+                )
+            except GradingError as exc:
+                return self.render_review_page(
+                    attempt,
+                    errors=[str(exc)],
+                    user_answer=submitted_answer,
+                )
+            outcome = complete_concept_attempt(
+                self.config,
+                attempt_id=attempt_id,
+                result=grade.result,
+                validator_summary=grade.summary,
+                failure_reason=grade.summary if grade.result == "fail" else None,
+            )
+            grader_summary = grade.summary
+            model_name = grade.model
+
         schedule = outcome.schedule
 
         content = f"""
@@ -342,6 +398,21 @@ class StudyWebApp:
           <p class="eyebrow">Review Result</p>
           <h1>{html.escape(outcome.title)}</h1>
           <p class="status status-{html.escape(outcome.result)}">Result: {html.escape(outcome.result)}</p>
+        </section>
+        <section class="panel">
+          <h2>Grading</h2>
+          <dl class="stats">
+            <div><dt>Grader</dt><dd>{html.escape(model_name)}</dd></div>
+          </dl>
+          <p>{html.escape(grader_summary)}</p>
+          <details class="answer-block">
+            <summary>Your answer</summary>
+            <p>{html.escape(submitted_answer) or "<em>No answer submitted.</em>"}</p>
+          </details>
+          <details class="answer-block">
+            <summary>Reference answer</summary>
+            <p>{html.escape(outcome.answer)}</p>
+          </details>
         </section>
         <section class="panel">
           <h2>Scheduling</h2>
@@ -407,11 +478,11 @@ class StudyWebApp:
             f'<input type="text" name="{html.escape(name)}" value="{safe_value}"></label>'
         )
 
-    def _textarea(self, name: str, label: str, value: str) -> str:
+    def _textarea(self, name: str, label: str, value: str, *, rows: int = 6) -> str:
         safe_value = html.escape(value)
         return (
             f'<label><span>{html.escape(label)}</span>'
-            f'<textarea name="{html.escape(name)}" rows="6">{safe_value}</textarea></label>'
+            f'<textarea name="{html.escape(name)}" rows="{rows}">{safe_value}</textarea></label>'
         )
 
 

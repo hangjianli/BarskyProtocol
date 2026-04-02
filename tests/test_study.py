@@ -4,6 +4,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from wsgiref.util import setup_testing_defaults
 
 from study.config import load_config
@@ -57,7 +58,9 @@ class StudyWorkflowTests(unittest.TestCase):
                     'exercise_scheduler = "leitner_fallback"',
                     "box_intervals = [1, 2, 4, 8, 16]",
                     'review_order = "oldest-first"',
-                    'llm_validator = "openai"',
+                    'llm_validator = "codex_oauth"',
+                    'llm_model = "gpt-4.1-mini"',
+                    'llm_auth_file = "~/.codex/auth.json"',
                 ]
             ),
             encoding="utf-8",
@@ -151,16 +154,22 @@ class StudyWorkflowTests(unittest.TestCase):
         status, _, review_html = call_app(self.app, method="GET", path=review_path)
         self.assertEqual(status, "200 OK")
         self.assertIn("Concept Review", review_html)
-        self.assertIn("Reveal answer", review_html)
+        self.assertIn("Type your answer before grading", review_html)
 
-        status, _, result_html = call_app(
-            self.app,
-            method="POST",
-            path=f"{review_path}/result",
-            body="result=fail",
-        )
+        with patch("study.web.grade_concept_answer") as mocked_grade:
+            mocked_grade.return_value.result = "fail"
+            mocked_grade.return_value.summary = "Your answer missed the timing-dependent part of the definition."
+            mocked_grade.return_value.model = "test-model"
+            status, _, result_html = call_app(
+                self.app,
+                method="POST",
+                path=f"{review_path}/result",
+                body="action=grade&user_answer=It+is+a+shared+state+bug",
+            )
         self.assertEqual(status, "200 OK")
         self.assertIn("Result: fail", result_html)
+        self.assertIn("test-model", result_html)
+        self.assertIn("Your answer", result_html)
         self.assertIn("Scheduler", result_html)
         self.assertIn("reset the card to box 1", result_html)
 
