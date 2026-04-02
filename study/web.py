@@ -74,6 +74,8 @@ class StudyWebApp:
             response = self.handle_import_notebook_form()
         elif method == "POST" and path == "/cards/import-notebook/preview":
             response = self.handle_import_notebook_preview(environ)
+        elif method == "POST" and path == "/cards/import-notebook/regenerate":
+            response = self.handle_import_notebook_regenerate(environ)
         elif method == "POST" and path == "/cards/import-notebook/create":
             response = self.handle_import_notebook_create(environ)
         elif method == "GET" and path == "/patterns":
@@ -225,6 +227,7 @@ class StudyWebApp:
             <div><dt>Source path</dt><dd>{html.escape(card.source_path or '-')}</dd></div>
             <div><dt>Source mode</dt><dd>{html.escape(card.source_mode or '-')}</dd></div>
             <div><dt>Source cells</dt><dd>{html.escape(card.source_cell_spec or '-')}</dd></div>
+            <div><dt>Import options</dt><dd>{html.escape(card.source_import_options or '-')}</dd></div>
           </dl>
           <p>{html.escape(card.last_schedule_reason)}</p>
         </section>
@@ -371,6 +374,7 @@ class StudyWebApp:
             {self._input("source_path", "Notebook path", values.get("source_path", ""))}
             {self._input("topic", "Default topic", values.get("topic", ""))}
             {self._input("source_label", "Source label", values.get("source_label", ""))}
+            {self._select("split_mode", "Split mode", values.get("split_mode", self.config.notebook_split_mode), [("balanced", "Balanced"), ("aggressive", "Aggressive")])}
             <input type="hidden" name="notebook_json" id="notebook-json" value="">
             <section class="dropzone" id="notebook-dropzone">
               <h2>Drop .ipynb or path</h2>
@@ -449,7 +453,7 @@ class StudyWebApp:
         form = self._parse_form(environ)
         values = {
             key: self._first(form, key)
-            for key in ("source_path", "topic", "source_label", "notebook_json")
+            for key in ("source_path", "topic", "source_label", "notebook_json", "split_mode")
         }
         try:
             source_path, source_mode, source_label, notebook_text = self._resolve_notebook_source(values)
@@ -459,6 +463,7 @@ class StudyWebApp:
                 source_mode=source_mode,
                 source_label=source_label,
                 topic=values["topic"],
+                split_mode=self._normalized_split_mode(values.get("split_mode", "")),
                 notebook_text=notebook_text,
             )
         except (ValueError, json.JSONDecodeError) as exc:
@@ -512,10 +517,22 @@ class StudyWebApp:
             <div><dt>Notebook</dt><dd>{html.escape(draft.source_label)}</dd></div>
             <div><dt>Source path</dt><dd>{html.escape(draft.source_path)}</dd></div>
             <div><dt>Source mode</dt><dd>{html.escape(draft.source_mode)}</dd></div>
+            <div><dt>Split mode</dt><dd>{html.escape(draft.split_mode)}</dd></div>
             <div><dt>Markdown cells</dt><dd>{draft.markdown_cells}</dd></div>
             <div><dt>Code cells</dt><dd>{draft.code_cells}</dd></div>
             <div><dt>Candidates</dt><dd>{len(draft.candidates)}</dd></div>
           </dl>
+        </section>
+        <section class="panel">
+          <h2>Regenerate Draft</h2>
+          <p class="muted">Change split aggressiveness and rebuild the draft from the same notebook source.</p>
+          <form method="post" action="/cards/import-notebook/regenerate" class="form-stack">
+            <input type="hidden" name="draft_id" value="{html.escape(draft.draft_id)}">
+            {self._select("split_mode", "Split mode", draft.split_mode, [("balanced", "Balanced"), ("aggressive", "Aggressive")])}
+            <div class="actions">
+              <button class="button button-secondary" type="submit">Regenerate Draft</button>
+            </div>
+          </form>
         </section>
         <form method="post" action="/cards/import-notebook/create" class="form-stack">
           <input type="hidden" name="draft_id" value="{html.escape(draft.draft_id)}">
@@ -527,6 +544,32 @@ class StudyWebApp:
         </form>
         """
         return self.html_page("Review Notebook Import", content)
+
+    def handle_import_notebook_regenerate(self, environ: dict) -> Response:
+        form = self._parse_form(environ)
+        draft_id = self._first(form, "draft_id")
+        try:
+            existing_draft = load_import_draft(self.config, draft_id)
+            source_path, source_mode, source_label, notebook_text = self._resolve_draft_source(existing_draft)
+            regenerated = build_import_draft(
+                self.config,
+                source_path=source_path,
+                source_mode=source_mode,
+                source_label=source_label,
+                topic=existing_draft.topic,
+                split_mode=self._normalized_split_mode(self._first(form, "split_mode")),
+                notebook_text=notebook_text,
+                draft_id=existing_draft.draft_id,
+            )
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self.handle_import_notebook_form(errors=[str(exc)])
+
+        if not regenerated.candidates:
+            return self.render_import_review_page(
+                regenerated,
+                errors=["No code exercise candidates were found with the selected split mode."],
+            )
+        return self.render_import_review_page(regenerated)
 
     def handle_import_notebook_create(self, environ: dict) -> Response:
         form = self._parse_form(environ)
@@ -570,6 +613,7 @@ class StudyWebApp:
                 source_mode=draft.source_mode,
                 source_label=draft.source_label,
                 source_cell_spec=candidate.source_cell_spec,
+                source_import_options=json.dumps({"split_mode": draft.split_mode}),
                 files=files,
             )
             created_ids.append(card_id)
@@ -954,6 +998,16 @@ class StudyWebApp:
             f'<textarea name="{html.escape(name)}" rows="{rows}">{safe_value}</textarea></label>'
         )
 
+    def _select(self, name: str, label: str, value: str, options: list[tuple[str, str]]) -> str:
+        option_html = "".join(
+            f'<option value="{html.escape(option_value)}"{" selected" if option_value == value else ""}>{html.escape(option_label)}</option>'
+            for option_value, option_label in options
+        )
+        return (
+            f'<label><span>{html.escape(label)}</span>'
+            f'<select name="{html.escape(name)}">{option_html}</select></label>'
+        )
+
     def _resolve_notebook_source(self, values: dict[str, str]) -> tuple[str, str, str, str]:
         source_path = values["source_path"].strip()
         notebook_json = values["notebook_json"].strip()
@@ -967,6 +1021,13 @@ class StudyWebApp:
             managed_path = save_managed_notebook(self.config, source_label=label, notebook_text=notebook_json)
             return str(managed_path), "managed_copy", label, notebook_json
         raise ValueError("Provide a notebook path or drop a notebook file first.")
+
+    def _resolve_draft_source(self, draft: object) -> tuple[str, str, str, str]:
+        resolved_path, notebook_text = load_notebook_text_from_path(draft.source_path)
+        return str(resolved_path), draft.source_mode, draft.source_label, notebook_text
+
+    def _normalized_split_mode(self, raw_value: str) -> str:
+        return raw_value if raw_value in {"balanced", "aggressive"} else self.config.notebook_split_mode
 
     def _import_notebook_script(self) -> str:
         return """

@@ -194,6 +194,8 @@ In v1, the import page should support:
 - pasting a notebook path
 - dropping plain text that contains a notebook path
 - uploading or dragging a notebook file
+- changing notebook split aggressiveness before card creation
+- regenerating the draft after changing split settings
 
 If a readable path is provided, the app should prefer `external_path`.
 
@@ -218,6 +220,27 @@ Segmentation in v1 should be heuristic and explainable:
 - if headings are weak, fall back to contiguous markdown+code chunks
 - ignore cell outputs
 - fold trivial setup cells into the nearest meaningful exercise when possible
+
+Segmentation should also be configurable. The initial design should support at
+least:
+
+- `balanced`
+- `aggressive`
+
+`balanced` keeps related code cells together under one heading-driven candidate.
+
+`aggressive` should split more readily so one notebook produces more, smaller
+exercise candidates.
+
+The import review flow should let the user regenerate the candidate set after
+changing split mode instead of forcing a brand-new import from scratch.
+
+Regeneration rules:
+
+1. Keep the same notebook source reference.
+2. Re-run segmentation with the selected split mode.
+3. Replace the prior draft candidate list.
+4. Preserve the review-first requirement before card creation.
 
 Each approved candidate should produce normal exercise assets:
 
@@ -273,6 +296,8 @@ Create a code exercise card and scaffold its assets.
 
 Import a notebook by path or upload, review proposed exercise candidates, and
 create selected `code_exercise` cards.
+
+The review page should also allow draft regeneration after changing split mode.
 
 #### `/cards/{card_id}`
 
@@ -427,9 +452,10 @@ For notebook import:
    - `external_path`
    - `managed_copy`
 3. The app parses notebook cells and proposes candidate exercise cards.
-4. The user reviews those candidates before creation.
-5. The app creates selected standalone `code_exercise` cards.
-6. Each generated card keeps provenance pointing back to the saved or external
+4. The user may change split configuration and regenerate the candidate draft.
+5. The user reviews those candidates before creation.
+6. The app creates selected standalone `code_exercise` cards.
+7. Each generated card keeps provenance pointing back to the saved or external
    notebook source.
 
 ### 2. Build the Daily Queue
@@ -694,6 +720,7 @@ Fields:
 - `source_mode`
 - `source_label`
 - `source_cell_spec`
+- `source_import_options`
 - `asset_path`
 - `box`
 - `lapse_count`
@@ -708,6 +735,7 @@ Rationale:
 - `type` allows different review flows under one scheduler
 - `title` is a stable summary across card types
 - source fields preserve provenance for imported study material
+- import options preserve how the notebook was segmented into cards
 - `asset_path` points to exercise assets for non-text cards
 - `box` is the active Leitner position
 - `lapse_count` tracks instability over time

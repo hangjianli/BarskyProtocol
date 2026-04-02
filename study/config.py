@@ -18,6 +18,7 @@ class StudyConfig:
     sources_dir: Path
     imports_dir: Path
     workspaces_dir: Path
+    notebook_split_mode: str
     box_intervals: dict[int, int]
     scheduler: str
     concept_scheduler: str
@@ -78,6 +79,7 @@ def load_config(start: Path | None = None) -> StudyConfig:
         sources_dir=_resolve_path(base_dir, study.get("sources_dir", ".barsky/sources")),
         imports_dir=_resolve_path(base_dir, study.get("imports_dir", ".barsky/imports")),
         workspaces_dir=_resolve_path(base_dir, study.get("workspaces_dir", ".barsky/workspaces")),
+        notebook_split_mode=study.get("notebook_split_mode", "balanced"),
         box_intervals=box_intervals,
         scheduler=study.get("scheduler", "leitner_fallback"),
         concept_scheduler=study.get("concept_scheduler", "leitner_fallback"),

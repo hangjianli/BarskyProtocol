@@ -67,6 +67,7 @@ class StudyWorkflowTests(unittest.TestCase):
                     'database = ".barsky/test.db"',
                     'cards_dir = "cards"',
                     'workspaces_dir = ".barsky/workspaces"',
+                    'notebook_split_mode = "balanced"',
                     'scheduler = "leitner_fallback"',
                     'concept_scheduler = "leitner_fallback"',
                     'exercise_scheduler = "leitner_fallback"',
@@ -477,6 +478,45 @@ class StudyWorkflowTests(unittest.TestCase):
         detail = get_card_detail(self.config, 1)
         self.assertEqual(detail.source_mode, "managed_copy")
         self.assertTrue(Path(detail.source_path).is_file())
+
+    def test_import_notebook_can_regenerate_with_more_aggressive_split(self) -> None:
+        notebook_path = self.root / "chapter.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Tokenizer\n", "Build the tokenizer pieces.\n"]},
+                        {"cell_type": "code", "source": ["import re\n"]},
+                        {"cell_type": "code", "source": ["def split_words(text: str) -> list[str]:\n", "    return re.findall(r\"\\w+\", text)\n"]},
+                        {"cell_type": "code", "source": ["def encode(tokens: list[str]) -> dict[str, int]:\n", "    return {token: index for index, token in enumerate(tokens)}\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, balanced_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(notebook_path))}&topic=llm&source_label=chapter.ipynb&split_mode=balanced",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Split mode", balanced_html)
+        self.assertIn(">balanced<", balanced_html)
+        self.assertIn("<dd>1</dd>", balanced_html)
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', balanced_html)
+        self.assertIsNotNone(draft_id)
+        status, _, aggressive_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/regenerate",
+            body=f"draft_id={draft_id.group(1)}&split_mode=aggressive",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn(">aggressive<", aggressive_html)
+        self.assertIn("<dd>2</dd>", aggressive_html)
 
 
 if __name__ == "__main__":

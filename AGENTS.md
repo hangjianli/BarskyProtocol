@@ -15,13 +15,15 @@ Create or activate the local environment with `source .venv/bin/activate`.
 - `python -m py_compile cli.py study/*.py tests/*.py`: catch syntax/import issues quickly.
 
 ## Coding Style & Naming Conventions
-Use Python with 4-space indentation and standard library-first solutions unless there is a clear dependency need. Prefer small functions, explicit data flow, and brief inline comments only where the logic is not self-evident. Use `snake_case` for functions, variables, and modules; use clear nouns for dataclasses such as `ScheduleDecision`. Keep HTML and CSS minimal and text-forward to match the product UI.
+Use Python with 4-space indentation and standard library-first solutions unless there is a clear dependency need. Prefer small functions, explicit data flow, and brief inline comments whenever they improve clarity, especially around non-obvious logic, parsing heuristics, storage mutations, and scheduler behavior. Use `snake_case` for functions, variables, and modules; use clear nouns for dataclasses such as `ScheduleDecision`. Keep HTML and CSS minimal and text-forward to match the product UI.
 
 ## Testing Guidelines
 Tests use `unittest`. Add or update tests for any behavior change in scheduling, grading, storage, or web routes. Name test methods descriptively, for example `test_exercise_review_pass_path`. Prefer deterministic tests with temp directories and mocked grader calls instead of networked validation.
 
 ## Commit & Pull Request Guidelines
 Follow the existing commit style: concise, imperative, and scoped, e.g. `feat: add phase 1 web study workflow` or `chore: bootstrap v1 study CLI`. Keep commits focused. For pull requests, include a short summary, user-visible behavior changes, verification steps, and screenshots for UI changes. Link the relevant design section in `DESIGN.md` when the change implements or revises architecture.
+
+Future feature work should not be developed directly on `main`. Start from `main`, create a dedicated feature branch, implement the work there, then raise a pull request and conduct code review before merging.
 
 ## Design Discipline
 If you make a major design decision, update `DESIGN.md` before implementing it. Treat the design doc as the source of truth for architecture, workflows, and product behavior changes, especially for scheduling, grading, import pipelines, and UI flow.

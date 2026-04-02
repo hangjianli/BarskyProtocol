@@ -30,6 +30,7 @@ class NotebookImportDraft:
     source_path: str
     source_label: str
     topic: str
+    split_mode: str
     notebook_title: str
     markdown_cells: int
     code_cells: int
@@ -43,19 +44,22 @@ def build_import_draft(
     source_mode: str,
     source_label: str,
     topic: str,
+    split_mode: str,
     notebook_text: str,
+    draft_id: str | None = None,
 ) -> NotebookImportDraft:
     notebook = json.loads(notebook_text)
     cells = notebook.get("cells", [])
     notebook_title = _infer_notebook_title(cells, source_label)
-    candidates = parse_notebook_candidates(cells, default_topic=topic)
-    draft_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    candidates = parse_notebook_candidates(cells, default_topic=topic, split_mode=split_mode)
+    resolved_draft_id = draft_id or datetime.now().strftime("%Y%m%d%H%M%S%f")
     draft = NotebookImportDraft(
-        draft_id=draft_id,
+        draft_id=resolved_draft_id,
         source_mode=source_mode,
         source_path=source_path,
         source_label=source_label,
         topic=topic.strip(),
+        split_mode=split_mode,
         notebook_title=notebook_title,
         markdown_cells=sum(1 for cell in cells if cell.get("cell_type") == "markdown"),
         code_cells=sum(1 for cell in cells if cell.get("cell_type") == "code"),
@@ -97,6 +101,7 @@ def load_import_draft(config: StudyConfig, draft_id: str) -> NotebookImportDraft
         source_path=str(payload["source_path"]),
         source_label=str(payload["source_label"]),
         topic=str(payload["topic"]),
+        split_mode=str(payload.get("split_mode", "balanced")),
         notebook_title=str(payload["notebook_title"]),
         markdown_cells=int(payload["markdown_cells"]),
         code_cells=int(payload["code_cells"]),
@@ -117,6 +122,7 @@ def save_import_draft(config: StudyConfig, draft: NotebookImportDraft) -> None:
         "source_path": draft.source_path,
         "source_label": draft.source_label,
         "topic": draft.topic,
+        "split_mode": draft.split_mode,
         "notebook_title": draft.notebook_title,
         "markdown_cells": draft.markdown_cells,
         "code_cells": draft.code_cells,
@@ -128,7 +134,18 @@ def save_import_draft(config: StudyConfig, draft: NotebookImportDraft) -> None:
     )
 
 
-def parse_notebook_candidates(cells: list[dict], *, default_topic: str = "") -> list[NotebookCandidate]:
+def parse_notebook_candidates(
+    cells: list[dict],
+    *,
+    default_topic: str = "",
+    split_mode: str = "balanced",
+) -> list[NotebookCandidate]:
+    if split_mode == "aggressive":
+        return _parse_aggressive_candidates(cells, default_topic=default_topic)
+    return _parse_balanced_candidates(cells, default_topic=default_topic)
+
+
+def _parse_balanced_candidates(cells: list[dict], *, default_topic: str = "") -> list[NotebookCandidate]:
     candidates: list[NotebookCandidate] = []
     current_title = ""
     current_notes: list[str] = []
@@ -191,6 +208,69 @@ def parse_notebook_candidates(cells: list[dict], *, default_topic: str = "") -> 
     return candidates
 
 
+def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") -> list[NotebookCandidate]:
+    candidates: list[NotebookCandidate] = []
+    current_title = ""
+    current_notes: list[str] = []
+    setup_code: list[str] = []
+    setup_indexes: list[int] = []
+
+    for index, cell in enumerate(cells, start=1):
+        cell_type = str(cell.get("cell_type", ""))
+        raw_source = _cell_source(cell)
+        if not raw_source:
+            continue
+
+        if cell_type == "markdown":
+            heading, body = _extract_heading(raw_source)
+            if heading:
+                current_title = heading
+                current_notes = [body] if body else []
+                setup_code = []
+                setup_indexes = [index]
+            else:
+                current_notes.append(raw_source)
+                setup_indexes.append(index)
+            continue
+
+        if cell_type != "code":
+            continue
+
+        # In aggressive mode, pure import cells are treated as context instead of
+        # becoming one-line exercises on their own.
+        if _is_setup_only_code(raw_source):
+            setup_code.append(raw_source)
+            setup_indexes.append(index)
+            continue
+
+        cell_indexes = setup_indexes + [index]
+        notes = list(current_notes)
+        if setup_code:
+            notes.append("Supporting setup code:\n\n```python\n" + "\n\n".join(setup_code) + "\n```")
+
+        title = current_title or _infer_code_title(raw_source, len(candidates) + 1)
+        if current_title:
+            title = f"{title} · Part {len([c for c in candidates if c.title.startswith(current_title)]) + 1}"
+        cell_spec = _format_cell_spec(cell_indexes)
+        names = _infer_top_level_names(raw_source)
+        candidates.append(
+            NotebookCandidate(
+                title=title,
+                prompt=_build_prompt(title, notes, raw_source, cell_spec),
+                topic=default_topic.strip(),
+                solution_code=f"{raw_source}\n",
+                answer_template=_build_answer_template(title, names, cell_spec),
+                tests_template=_build_tests_template(names, cell_spec),
+                source_cell_spec=cell_spec,
+                cell_indexes=cell_indexes,
+            )
+        )
+        setup_code = []
+        setup_indexes = []
+
+    return candidates
+
+
 def _cell_source(cell: dict) -> str:
     source = cell.get("source", [])
     if isinstance(source, list):
@@ -239,6 +319,17 @@ def _infer_top_level_names(code: str) -> list[str]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.append(node.name)
     return names
+
+
+def _is_setup_only_code(code: str) -> bool:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+
+    if not tree.body:
+        return True
+    return all(isinstance(node, (ast.Import, ast.ImportFrom)) for node in tree.body)
 
 
 def _format_cell_spec(indexes: list[int]) -> str:
