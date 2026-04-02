@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import quote_plus, urlencode, urlsplit
 from unittest.mock import patch
 from wsgiref.util import setup_testing_defaults
 
@@ -57,6 +57,11 @@ def call_app(
 
     body_bytes = b"".join(app(environ, start_response))
     return str(captured["status"]), dict(captured["headers"]), body_bytes.decode("utf-8")
+
+
+def split_location(location: str) -> tuple[str, str]:
+    parsed = urlsplit(location)
+    return parsed.path, parsed.query
 
 
 class StudyWorkflowTests(unittest.TestCase):
@@ -167,10 +172,11 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed")
         self.assertEqual(status, "303 See Other")
-        review_path = headers["Location"]
+        review_path, review_query = split_location(headers["Location"])
         self.assertRegex(review_path, r"^/review/\d+$")
+        self.assertEqual(review_query, "mode=mixed")
 
-        status, _, review_html = call_app(self.app, method="GET", path=review_path)
+        status, _, review_html = call_app(self.app, method="GET", path=review_path, query_string=review_query)
         self.assertEqual(status, "200 OK")
         self.assertIn("Concept Review", review_html)
         self.assertIn("Type your answer before grading", review_html)
@@ -185,7 +191,7 @@ class StudyWorkflowTests(unittest.TestCase):
                 self.app,
                 method="POST",
                 path=f"{review_path}/result",
-                body="action=grade&user_answer=It+is+a+shared+state+bug",
+                body="action=grade&mode=mixed&user_answer=It+is+a+shared+state+bug",
             )
         self.assertEqual(status, "200 OK")
         self.assertIn("Result: fail", result_html)
@@ -244,6 +250,48 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Source View", source_html)
         self.assertIn("def get_pairs(word):", source_html)
         self.assertIn("source-line-target", source_html)
+
+    def test_review_page_can_navigate_to_adjacent_cards_in_queue(self) -> None:
+        add_concept_card(
+            self.config,
+            title="Card One",
+            prompt="First prompt",
+            answer="First answer",
+            topic="python",
+        )
+        add_concept_card(
+            self.config,
+            title="Card Two",
+            prompt="Second prompt",
+            answer="Second answer",
+            topic="python",
+        )
+
+        status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=concept")
+        self.assertEqual(status, "303 See Other")
+        review_path, review_query = split_location(headers["Location"])
+
+        status, _, review_html = call_app(self.app, method="GET", path=review_path, query_string=review_query)
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Previous Card", review_html)
+        self.assertIn("button-disabled", review_html)
+        self.assertIn(f"{review_path}/navigate?mode=concept&amp;direction=next", review_html)
+
+        status, headers, _ = call_app(
+            self.app,
+            method="GET",
+            path=f"{review_path}/navigate",
+            query_string="mode=concept&direction=next",
+        )
+        self.assertEqual(status, "303 See Other")
+        next_path, next_query = split_location(headers["Location"])
+        self.assertRegex(next_path, r"^/review/\d+$")
+        self.assertEqual(next_query, "mode=concept")
+
+        status, _, next_html = call_app(self.app, method="GET", path=next_path, query_string=next_query)
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Card Two", next_html)
+        self.assertIn(f"{next_path}/navigate?mode=concept&amp;direction=previous", next_html)
 
     def test_source_view_rejects_paths_outside_card_bound_sources(self) -> None:
         source_file = self.root / "allowed.py"
@@ -422,7 +470,8 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed")
         self.assertEqual(status, "303 See Other")
-        status, _, body = call_app(self.app, method="GET", path=headers["Location"])
+        review_path, review_query = split_location(headers["Location"])
+        status, _, body = call_app(self.app, method="GET", path=review_path, query_string=review_query)
         self.assertEqual(status, "200 OK")
         self.assertIn("Exercise Review", body)
 
@@ -594,9 +643,9 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=exercise")
         self.assertEqual(status, "303 See Other")
-        review_path = headers["Location"]
+        review_path, review_query = split_location(headers["Location"])
 
-        status, _, review_html = call_app(self.app, method="GET", path=review_path)
+        status, _, review_html = call_app(self.app, method="GET", path=review_path, query_string=review_query)
         self.assertEqual(status, "200 OK")
         self.assertIn("Exercise Review", review_html)
         self.assertIn("Create Workspace", review_html)
@@ -605,7 +654,7 @@ class StudyWorkflowTests(unittest.TestCase):
             self.app,
             method="POST",
             path=f"{review_path}/workspace",
-            body="action=create",
+            body="action=create&mode=exercise",
         )
         self.assertEqual(status, "303 See Other")
         attempt_id = int(review_path.rsplit("/", 1)[-1])
@@ -616,7 +665,7 @@ class StudyWorkflowTests(unittest.TestCase):
             self.app,
             method="POST",
             path=f"{review_path}/validate",
-            body="",
+            body="mode=exercise",
         )
         self.assertEqual(status, "200 OK")
         self.assertIn("Result: fail", fail_html)
@@ -640,12 +689,12 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=exercise")
         self.assertEqual(status, "303 See Other")
-        review_path = headers["Location"]
+        review_path, _ = split_location(headers["Location"])
         call_app(
             self.app,
             method="POST",
             path=f"{review_path}/workspace",
-            body="action=create",
+            body="action=create&mode=exercise",
         )
         attempt_id = int(review_path.rsplit("/", 1)[-1])
         attempt = get_exercise_attempt_view(self.config, attempt_id)
@@ -660,7 +709,7 @@ class StudyWorkflowTests(unittest.TestCase):
             self.app,
             method="POST",
             path=f"{review_path}/validate",
-            body="",
+            body="mode=exercise",
         )
         self.assertEqual(status, "200 OK")
         self.assertIn("Result: pass", pass_html)

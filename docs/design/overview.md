@@ -111,4 +111,5 @@ The web UI should stay:
 - light on button clutter, with secondary actions collapsed into dropdowns where useful
 - keep global navigation compact, and avoid duplicating the dashboard's primary review action in the top bar
 - keep the dashboard hero to one primary review CTA plus one compact quick-actions control
+- let review pages move backward or forward within the current queue without forcing a return to the dashboard
 - free of embedded IDE complexity in v1

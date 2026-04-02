@@ -727,6 +727,83 @@ def start_review_attempt(config: StudyConfig, *, card_type: str | None = "concep
         ).fetchone()
 
 
+def get_or_create_review_attempt_for_card(config: StudyConfig, *, card_id: int) -> sqlite3.Row | None:
+    with managed_connection(config) as connection:
+        # Reuse an active attempt so queue navigation does not fan out duplicate rows.
+        active = connection.execute(
+            """
+            SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
+                   cards.scheduler_name, cards.last_schedule_reason, cards.asset_path,
+                   concept_cards.prompt, concept_cards.answer,
+                   exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
+            FROM review_attempts
+            JOIN cards ON cards.id = review_attempts.card_id
+            LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
+            WHERE review_attempts.card_id = ? AND review_attempts.status = 'active'
+            ORDER BY review_attempts.started_at ASC
+            LIMIT 1
+            """,
+            (card_id,),
+        ).fetchone()
+        if active is not None:
+            return active
+
+        card = connection.execute(
+            "SELECT id, type FROM cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+        if card is None:
+            return None
+
+        cursor = connection.execute(
+            """
+            INSERT INTO review_attempts (card_id, card_type, status, started_at)
+            VALUES (?, ?, 'active', ?)
+            """,
+            (int(card["id"]), str(card["type"]), to_iso(utc_now())),
+        )
+        attempt_id = int(cursor.lastrowid)
+        return connection.execute(
+            """
+            SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
+                   cards.scheduler_name, cards.last_schedule_reason, cards.asset_path,
+                   concept_cards.prompt, concept_cards.answer,
+                   exercise_cards.prompt_path, exercise_cards.entrypoint, exercise_cards.tests_path
+            FROM review_attempts
+            JOIN cards ON cards.id = review_attempts.card_id
+            LEFT JOIN concept_cards ON concept_cards.card_id = cards.id
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
+            WHERE review_attempts.id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+
+
+def adjacent_review_card_id(
+    config: StudyConfig,
+    *,
+    current_card_id: int,
+    queue_mode: str,
+    direction: str,
+) -> int | None:
+    if direction not in {"previous", "next"}:
+        return None
+
+    # Navigation follows the current due queue rather than raw card creation order.
+    card_type = None if queue_mode == "mixed" else ("concept" if queue_mode == "concept" else "code_exercise")
+    due = due_cards(config, card_type=card_type)
+    ordered_ids = [int(row["id"]) for row in due]
+    if current_card_id not in ordered_ids:
+        return None
+
+    current_index = ordered_ids.index(current_card_id)
+    target_index = current_index - 1 if direction == "previous" else current_index + 1
+    if target_index < 0 or target_index >= len(ordered_ids):
+        return None
+    return ordered_ids[target_index]
+
+
 def get_review_attempt(config: StudyConfig, attempt_id: int) -> sqlite3.Row | None:
     with managed_connection(config) as connection:
         return connection.execute(

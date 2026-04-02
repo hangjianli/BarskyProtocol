@@ -27,11 +27,13 @@ from study.storage import (
     add_concept_card,
     delete_card,
     add_exercise_card,
+    adjacent_review_card_id,
     complete_concept_attempt,
     complete_exercise_attempt,
     dashboard_stats,
     get_card_detail,
     get_exercise_attempt_view,
+    get_or_create_review_attempt_for_card,
     get_review_attempt,
     list_cards,
     recent_reviews_for_card,
@@ -104,8 +106,10 @@ class StudyWebApp:
             response = self.handle_start_review(query)
         elif method == "GET" and re.fullmatch(r"/review/\d+/source", path):
             response = self.handle_review_source_view(int(path.split("/")[-2]), query)
+        elif method == "GET" and re.fullmatch(r"/review/\d+/navigate", path):
+            response = self.handle_review_navigation(int(path.split("/")[-2]), query)
         elif method == "GET" and re.fullmatch(r"/review/\d+", path):
-            response = self.handle_review_page(int(path.rsplit("/", 1)[-1]))
+            response = self.handle_review_page(int(path.rsplit("/", 1)[-1]), query)
         elif method == "POST" and re.fullmatch(r"/review/\d+/result", path):
             attempt_id = int(path.split("/")[-2])
             response = self.handle_review_result(environ, attempt_id)
@@ -302,10 +306,11 @@ class StudyWebApp:
         card = get_card_detail(self.config, int(attempt["card_id"]))
         if card is None:
             return self.text("404 Not Found", status="404 Not Found")
+        queue_mode = self._review_mode(query)
         return self._render_source_view(
             card=card,
             query=query,
-            back_href=f"/review/{attempt_id}",
+            back_href=self._review_href(attempt_id, queue_mode=queue_mode),
             source_title=str(attempt["title"]),
         )
 
@@ -752,9 +757,7 @@ class StudyWebApp:
         return self.redirect(f"/cards/{created_ids[0]}")
 
     def handle_start_review(self, query: dict[str, list[str]]) -> Response:
-        mode = query.get("mode", ["mixed"])[0]
-        if mode not in {"mixed", "concept", "exercise"}:
-            mode = "mixed"
+        mode = self._review_mode(query)
         card_type = None if mode == "mixed" else ("concept" if mode == "concept" else "code_exercise")
         attempt = start_review_attempt(self.config, card_type=card_type)
         if attempt is None:
@@ -768,21 +771,43 @@ class StudyWebApp:
             </section>
             """
             return self.html_page("No Cards Due", content)
-        return self.redirect(f"/review/{int(attempt['id'])}")
+        return self.redirect(self._review_href(int(attempt["id"]), queue_mode=mode))
 
-    def handle_review_page(self, attempt_id: int) -> Response:
+    def handle_review_navigation(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
         attempt = get_review_attempt(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
 
+        queue_mode = self._review_mode(query)
+        adjacent_card_id = adjacent_review_card_id(
+            self.config,
+            current_card_id=int(attempt["card_id"]),
+            queue_mode=queue_mode,
+            direction=query.get("direction", [""])[0],
+        )
+        if adjacent_card_id is None:
+            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
+
+        adjacent_attempt = get_or_create_review_attempt_for_card(self.config, card_id=adjacent_card_id)
+        if adjacent_attempt is None:
+            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
+        return self.redirect(self._review_href(int(adjacent_attempt["id"]), queue_mode=queue_mode))
+
+    def handle_review_page(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
+        attempt = get_review_attempt(self.config, attempt_id)
+        if attempt is None:
+            return self.text("404 Not Found", status="404 Not Found")
+        queue_mode = self._review_mode(query)
+
         if str(attempt["card_type"]) == "code_exercise":
-            return self.render_exercise_review_page(attempt_id)
-        return self.render_review_page(attempt)
+            return self.render_exercise_review_page(attempt_id, queue_mode=queue_mode)
+        return self.render_review_page(attempt, queue_mode=queue_mode)
 
     def render_review_page(
         self,
         attempt: object,
         *,
+        queue_mode: str = "mixed",
         errors: list[str] | None = None,
         user_answer: str = "",
     ) -> Response:
@@ -792,7 +817,7 @@ class StudyWebApp:
               <h1>Review Completed</h1>
               <p class="muted">Attempt {int(attempt['id'])} has already been recorded as {html.escape(str(attempt['result']))}.</p>
               <div class="actions">
-                <a class="button" href="/review">Continue Review</a>
+                <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
               </div>
             </section>
@@ -813,14 +838,16 @@ class StudyWebApp:
           <p class="eyebrow">Concept Review</p>
           <h1>{html.escape(str(attempt['title']))}</h1>
           <p class="meta">Topic: {html.escape(str(attempt['topic'] or '-'))} · Box: {attempt['box']} · Due: {html.escape(self._format_date(str(attempt['next_review_at'])))}</p>
+          {self._render_review_navigation(int(attempt['id']), int(attempt['card_id']), queue_mode=queue_mode)}
         </section>
         <section class="panel">
           <h2>Prompt</h2>
-          <div class="markdown-content">{self._render_markdown(str(attempt['prompt']), card_id=int(attempt['card_id']), attempt_id=int(attempt['id']))}</div>
+          <div class="markdown-content">{self._render_markdown(str(attempt['prompt']), card_id=int(attempt['card_id']), attempt_id=int(attempt['id']), queue_mode=queue_mode)}</div>
         </section>
         <section class="panel">
           <h2>Your Answer</h2>
           <form method="post" action="/review/{int(attempt['id'])}/result" class="form-stack">
+            <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
             {self._textarea("user_answer", "Type your answer before grading", user_answer, rows=8)}
             <div class="actions">
               {self._select("action", "Review action", "grade", [("grade", "Grade with LLM"), ("incomplete", "Mark Incomplete")])}
@@ -831,7 +858,13 @@ class StudyWebApp:
         """
         return self.html_page("Concept Review", content)
 
-    def render_exercise_review_page(self, attempt_id: int, errors: list[str] | None = None) -> Response:
+    def render_exercise_review_page(
+        self,
+        attempt_id: int,
+        errors: list[str] | None = None,
+        *,
+        queue_mode: str = "mixed",
+    ) -> Response:
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -841,7 +874,7 @@ class StudyWebApp:
               <h1>Review Completed</h1>
               <p class="muted">Attempt {attempt.attempt_id} has already been recorded as {html.escape(attempt.result or '-')}.</p>
               <div class="actions">
-                <a class="button" href="/review?mode=exercise">Continue Review</a>
+                <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
               </div>
             </section>
@@ -864,10 +897,11 @@ class StudyWebApp:
           <p class="eyebrow">Exercise Review</p>
           <h1>{html.escape(attempt.title)}</h1>
           <p class="meta">Topic: {html.escape(attempt.topic or '-')} · Box: {attempt.box} · Due: {html.escape(self._format_date(attempt.next_review_at))}</p>
+          {self._render_review_navigation(attempt_id, attempt.card_id, queue_mode=queue_mode)}
         </section>
         <section class="panel">
           <h2>Prompt</h2>
-          <div class="markdown-content">{self._render_markdown(attempt.prompt, card_id=attempt.card_id, attempt_id=attempt.attempt_id)}</div>
+          <div class="markdown-content">{self._render_markdown(attempt.prompt, card_id=attempt.card_id, attempt_id=attempt.attempt_id, queue_mode=queue_mode)}</div>
         </section>
         <section class="panel">
           <h2>Workspace</h2>
@@ -878,6 +912,7 @@ class StudyWebApp:
             <div><dt>Tests</dt><dd>{html.escape(Path(attempt.tests_path).name)}</dd></div>
           </dl>
           <form method="post" action="/review/{attempt_id}/workspace" class="form-stack">
+            <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
             {self._select("action", "Workspace action", "create", [("create", "Reset Workspace" if attempt.workspace_path else "Create Workspace"), ("incomplete", "Mark Incomplete")])}
             <div class="actions">
               <button class="button" type="submit">Apply Workspace Action</button>
@@ -888,6 +923,7 @@ class StudyWebApp:
           <h2>Validation</h2>
           <p class="muted">Edit the workspace locally, then run the test suite from the browser.</p>
           <form method="post" action="/review/{attempt_id}/validate" class="actions">
+            <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
             <button class="button" type="submit">Run Tests</button>
           </form>
           <p>{html.escape(attempt.validator_summary or 'No validation run yet.')}</p>
@@ -899,6 +935,7 @@ class StudyWebApp:
     def handle_review_result(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
         action = self._first(form, "action")
+        queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
         attempt = get_review_attempt(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -913,6 +950,7 @@ class StudyWebApp:
             if not submitted_answer:
                 return self.render_review_page(
                     attempt,
+                    queue_mode=queue_mode,
                     errors=["Type an answer before requesting grading."],
                     user_answer=submitted_answer,
                 )
@@ -926,6 +964,7 @@ class StudyWebApp:
             except GradingError as exc:
                 return self.render_review_page(
                     attempt,
+                    queue_mode=queue_mode,
                     errors=[str(exc)],
                     user_answer=submitted_answer,
                 )
@@ -975,7 +1014,7 @@ class StudyWebApp:
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
         <section class="actions">
-          <a class="button" href="/review?mode=mixed">Continue Review</a>
+          <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
@@ -984,6 +1023,7 @@ class StudyWebApp:
     def handle_exercise_workspace(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
         action = self._first(form, "action")
+        queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -997,18 +1037,30 @@ class StudyWebApp:
                 failing_tests=[],
                 workspace_path=attempt.workspace_path,
             )
-            return self.render_exercise_result_page(outcome, validator_summary="The exercise attempt was marked incomplete.", failing_tests=[], workspace_path=attempt.workspace_path)
+            return self.render_exercise_result_page(
+                outcome,
+                validator_summary="The exercise attempt was marked incomplete.",
+                failing_tests=[],
+                workspace_path=attempt.workspace_path,
+                queue_mode=queue_mode,
+            )
 
         workspace_dir = create_workspace(self.config, attempt_id=attempt_id, asset_dir=Path(attempt.asset_path))
         update_attempt_workspace(self.config, attempt_id=attempt_id, workspace_path=str(workspace_dir))
-        return self.redirect(f"/review/{attempt_id}")
+        return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
 
     def handle_exercise_validate(self, environ: dict, attempt_id: int) -> Response:
+        form = self._parse_form(environ)
+        queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
         if not attempt.workspace_path:
-            return self.render_exercise_review_page(attempt_id, errors=["Create a workspace before running tests."])
+            return self.render_exercise_review_page(
+                attempt_id,
+                errors=["Create a workspace before running tests."],
+                queue_mode=queue_mode,
+            )
 
         validation = run_exercise_tests(Path(attempt.workspace_path))
         outcome = complete_exercise_attempt(
@@ -1028,6 +1080,7 @@ class StudyWebApp:
             validator_summary=validation.summary,
             failing_tests=validation.failing_tests,
             workspace_path=attempt.workspace_path,
+            queue_mode=queue_mode,
         )
 
     def render_exercise_result_page(
@@ -1037,6 +1090,7 @@ class StudyWebApp:
         validator_summary: str,
         failing_tests: list[str],
         workspace_path: str | None,
+        queue_mode: str = "mixed",
     ) -> Response:
         schedule = outcome.schedule
         failing_html = "".join(
@@ -1070,7 +1124,7 @@ class StudyWebApp:
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
         <section class="actions">
-          <a class="button" href="/review?mode=exercise">Continue Review</a>
+          <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
@@ -1124,6 +1178,58 @@ class StudyWebApp:
 
         # Due dates only need the calendar day in the study UI.
         return parsed.astimezone().strftime("%Y-%m-%d")
+
+    def _review_mode(self, query: dict[str, list[str]]) -> str:
+        mode = query.get("mode", ["mixed"])[0]
+        if mode not in {"mixed", "concept", "exercise"}:
+            return "mixed"
+        return mode
+
+    def _review_href(self, attempt_id: int, *, queue_mode: str) -> str:
+        return f"/review/{attempt_id}?mode={queue_mode}"
+
+    def _render_review_navigation(self, attempt_id: int, card_id: int, *, queue_mode: str) -> str:
+        previous_card = adjacent_review_card_id(
+            self.config,
+            current_card_id=card_id,
+            queue_mode=queue_mode,
+            direction="previous",
+        )
+        next_card = adjacent_review_card_id(
+            self.config,
+            current_card_id=card_id,
+            queue_mode=queue_mode,
+            direction="next",
+        )
+        previous_link = self._navigation_link(
+            attempt_id,
+            queue_mode=queue_mode,
+            direction="previous",
+            label="Previous Card",
+            enabled=previous_card is not None,
+        )
+        next_link = self._navigation_link(
+            attempt_id,
+            queue_mode=queue_mode,
+            direction="next",
+            label="Next Card",
+            enabled=next_card is not None,
+        )
+        return f'<div class="review-nav">{previous_link}{next_link}</div>'
+
+    def _navigation_link(
+        self,
+        attempt_id: int,
+        *,
+        queue_mode: str,
+        direction: str,
+        label: str,
+        enabled: bool,
+    ) -> str:
+        if not enabled:
+            return f'<span class="button button-secondary button-disabled">{html.escape(label)}</span>'
+        href = f"/review/{attempt_id}/navigate?mode={queue_mode}&direction={direction}"
+        return f'<a class="button button-secondary" href="{html.escape(href)}">{html.escape(label)}</a>'
 
     def _render_source_view(
         self,
@@ -1198,6 +1304,7 @@ class StudyWebApp:
         *,
         card_id: int | None = None,
         attempt_id: int | None = None,
+        queue_mode: str = "mixed",
     ) -> str:
         text = re.sub(r"<img[^>]*>", "", raw_text, flags=re.IGNORECASE).replace("\r\n", "\n").strip()
         if not text:
@@ -1215,7 +1322,7 @@ class StudyWebApp:
                 return
             paragraph = " ".join(line.strip() for line in paragraph_lines if line.strip())
             blocks.append(
-                f"<p>{self._render_inline_markdown(paragraph, card_id=card_id, attempt_id=attempt_id)}</p>"
+                f"<p>{self._render_inline_markdown(paragraph, card_id=card_id, attempt_id=attempt_id, queue_mode=queue_mode)}</p>"
             )
             paragraph_lines.clear()
 
@@ -1261,6 +1368,7 @@ class StudyWebApp:
                     heading_match.group(2).strip(),
                     card_id=card_id,
                     attempt_id=attempt_id,
+                    queue_mode=queue_mode,
                 )
                 blocks.append(f"<h{level}>{heading_html}</h{level}>")
                 continue
@@ -1274,6 +1382,7 @@ class StudyWebApp:
                         unordered_match.group(1).strip(),
                         card_id=card_id,
                         attempt_id=attempt_id,
+                        queue_mode=queue_mode,
                     )
                 )
                 continue
@@ -1287,6 +1396,7 @@ class StudyWebApp:
                         ordered_match.group(1).strip(),
                         card_id=card_id,
                         attempt_id=attempt_id,
+                        queue_mode=queue_mode,
                     )
                 )
                 continue
@@ -1306,6 +1416,7 @@ class StudyWebApp:
         *,
         card_id: int | None,
         attempt_id: int | None,
+        queue_mode: str,
     ) -> str:
         text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", "", raw_text)
         parts = re.split(r"(`[^`]+`)", text)
@@ -1317,7 +1428,12 @@ class StudyWebApp:
                 rendered_parts.append(f"<code>{html.escape(part[1:-1])}</code>")
                 continue
             rendered_parts.append(
-                self._render_inline_without_code(part, card_id=card_id, attempt_id=attempt_id)
+                self._render_inline_without_code(
+                    part,
+                    card_id=card_id,
+                    attempt_id=attempt_id,
+                    queue_mode=queue_mode,
+                )
             )
         return "".join(rendered_parts)
 
@@ -1327,6 +1443,7 @@ class StudyWebApp:
         *,
         card_id: int | None,
         attempt_id: int | None,
+        queue_mode: str,
     ) -> str:
         pieces: list[str] = []
         cursor = 0
@@ -1340,6 +1457,7 @@ class StudyWebApp:
                 match.group(2),
                 card_id=card_id,
                 attempt_id=attempt_id,
+                queue_mode=queue_mode,
             )
             if href is None:
                 pieces.append(label)
@@ -1364,6 +1482,7 @@ class StudyWebApp:
         *,
         card_id: int | None,
         attempt_id: int | None,
+        queue_mode: str,
     ) -> str | None:
         candidate = target.strip()
         if candidate.startswith(("http://", "https://")):
@@ -1380,6 +1499,7 @@ class StudyWebApp:
             query["end"] = str(source_ref.end_line)
 
         if attempt_id is not None:
+            query["mode"] = queue_mode
             return f"/review/{attempt_id}/source?{urlencode(query)}"
         if card_id is not None:
             return f"/cards/{card_id}/source?{urlencode(query)}"

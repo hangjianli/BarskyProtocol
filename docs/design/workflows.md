@@ -13,6 +13,13 @@ When the user opens the app:
 
 The scheduler decides what is due. The UI decides how it is presented.
 
+Queue navigation rules:
+
+- every review page should preserve the active queue mode: `mixed`, `concept`, or `exercise`
+- the user should be able to move to the previous or next due card from the current review page
+- navigation should stay inside the selected queue instead of jumping back to the dashboard
+- if an adjacent card already has an active attempt, navigation should reuse it instead of creating a duplicate
+
 ## Concept Review
 
 1. Show the prompt.
@@ -22,7 +29,8 @@ The scheduler decides what is due. The UI decides how it is presented.
 2. Let the user type an answer.
 3. Grade the answer with the LLM.
 4. Record `pass`, `fail`, or `incomplete`.
-5. Update scheduling.
+5. Allow previous/next navigation within the current due queue.
+6. Update scheduling.
 
 Concept review is direct and single-page.
 
@@ -34,7 +42,8 @@ Concept review is direct and single-page.
 4. The user edits locally in their own editor.
 5. The app runs validation from the browser.
 6. The app records `pass`, `fail`, or `incomplete`.
-7. The scheduler updates the next review.
+7. The user can move to the previous or next due card without restarting review mode.
+8. The scheduler updates the next review.
 
 ```mermaid
 flowchart TD
