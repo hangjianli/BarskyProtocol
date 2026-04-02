@@ -20,6 +20,12 @@ class ConceptGrade:
     model: str
 
 
+@dataclass(frozen=True)
+class LLMResult:
+    content: dict
+    model: str
+
+
 def _load_codex_access_token(auth_file: Path) -> str:
     if not auth_file.is_file():
         raise GradingError(f"Codex auth file not found: {auth_file}")
@@ -49,13 +55,12 @@ def _resolve_auth_header(config: StudyConfig) -> str:
     raise GradingError(f"Unsupported llm_validator: {config.llm_validator}")
 
 
-def grade_concept_answer(
+def _call_json_llm(
     config: StudyConfig,
     *,
-    prompt: str,
-    reference_answer: str,
-    user_answer: str,
-) -> ConceptGrade:
+    system_prompt: str,
+    user_prompt: str,
+) -> LLMResult:
     endpoint = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     model = os.environ.get("OPENAI_MODEL", config.llm_model)
     authorization = _resolve_auth_header(config)
@@ -64,23 +69,11 @@ def grade_concept_answer(
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "You grade study answers for a spaced-repetition system. "
-                    "Return strict JSON with keys `result` and `summary`. "
-                    "`result` must be `pass` or `fail`. "
-                    "Grade semantic correctness rather than exact wording, but fail answers "
-                    "that omit core ideas or introduce contradictions. "
-                    "`summary` must be concise and explain the grading decision."
-                ),
+                "content": system_prompt,
             },
             {
                 "role": "user",
-                "content": (
-                    f"Prompt:\n{prompt}\n\n"
-                    f"Reference answer:\n{reference_answer}\n\n"
-                    f"User answer:\n{user_answer}\n\n"
-                    "Return JSON only."
-                ),
+                "content": user_prompt,
             },
         ],
         # JSON mode keeps the response machine-readable without adding a client dependency.
@@ -110,14 +103,46 @@ def grade_concept_answer(
     try:
         content = raw_response["choices"][0]["message"]["content"]
         parsed = json.loads(content)
-        result = str(parsed["result"]).strip().lower()
-        summary = str(parsed["summary"]).strip()
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         raise GradingError("The grading response could not be parsed as JSON.") from exc
+
+    return LLMResult(content=parsed, model=model)
+
+
+def grade_concept_answer(
+    config: StudyConfig,
+    *,
+    prompt: str,
+    reference_answer: str,
+    user_answer: str,
+) -> ConceptGrade:
+    response = _call_json_llm(
+        config,
+        system_prompt=(
+            "You grade study answers for a spaced-repetition system. "
+            "Return strict JSON with keys `result` and `summary`. "
+            "`result` must be `pass` or `fail`. "
+            "Grade semantic correctness rather than exact wording, but fail answers "
+            "that omit core ideas or introduce contradictions. "
+            "`summary` must be concise and explain the grading decision."
+        ),
+        user_prompt=(
+            f"Prompt:\n{prompt}\n\n"
+            f"Reference answer:\n{reference_answer}\n\n"
+            f"User answer:\n{user_answer}\n\n"
+            "Return JSON only."
+        ),
+    )
+
+    try:
+        result = str(response.content["result"]).strip().lower()
+        summary = str(response.content["summary"]).strip()
+    except (KeyError, TypeError) as exc:
+        raise GradingError("The grading response did not include the expected keys.") from exc
 
     if result not in {"pass", "fail"}:
         raise GradingError("The grading response returned an invalid result.")
     if not summary:
         raise GradingError("The grading response did not include a summary.")
 
-    return ConceptGrade(result=result, summary=summary, model=model)
+    return ConceptGrade(result=result, summary=summary, model=response.model)

@@ -414,10 +414,12 @@ class StudyWorkflowTests(unittest.TestCase):
             body=f"source_path={notebook_path}&topic=llm-from-scratch&source_label=Chapter+2",
         )
         self.assertEqual(status, "200 OK")
-        self.assertIn("Review Imported Notebook", review_html)
+        self.assertIn("Review Imported Source", review_html)
         self.assertIn("external_path", review_html)
+        self.assertIn("ipynb", review_html)
         self.assertIn("Candidate 1", review_html)
         self.assertIn("Candidate 2", review_html)
+        self.assertIn("Delete Candidate", review_html)
 
         draft_id = re.search(r'name="draft_id" value="([^"]+)"', review_html)
         self.assertIsNotNone(draft_id)
@@ -445,7 +447,7 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertTrue((Path(first.asset_path) / "solution.py").read_text(encoding="utf-8").startswith("def tokenize"))
 
     def test_import_notebook_upload_creates_managed_copy(self) -> None:
-        notebook_json = json.dumps(
+        source_text = json.dumps(
             {
                 "cells": [
                     {"cell_type": "markdown", "source": ["# Tiny Exercise\n", "Short section.\n"]},
@@ -458,7 +460,7 @@ class StudyWorkflowTests(unittest.TestCase):
             self.app,
             method="POST",
             path="/cards/import-notebook/preview",
-            body="topic=math&source_label=tiny.ipynb&notebook_json=" + quote_plus(notebook_json),
+            body="topic=math&source_label=tiny.ipynb&source_kind=ipynb&source_text=" + quote_plus(source_text),
         )
         self.assertEqual(status, "200 OK")
         self.assertIn("managed_copy", review_html)
@@ -478,6 +480,42 @@ class StudyWorkflowTests(unittest.TestCase):
         detail = get_card_detail(self.config, 1)
         self.assertEqual(detail.source_mode, "managed_copy")
         self.assertTrue(Path(detail.source_path).is_file())
+        self.assertEqual(detail.source_kind, "ipynb")
+
+    def test_import_notebook_prefills_llm_suggested_topic_and_tags(self) -> None:
+        notebook_path = self.root / "metadata.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Tokenizer\n", "Tokenizer exercise.\n"]},
+                        {"cell_type": "code", "source": ["def encode(text: str) -> list[str]:\n", "    return text.split()\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("study.notebooks._call_json_llm") as mocked_llm:
+            mocked_llm.return_value.content = {
+                "candidates": [
+                    {
+                        "topic": "nlp",
+                        "tags": ["tokenizer", "python", "regex"],
+                    }
+                ]
+            }
+            mocked_llm.return_value.model = "test-model"
+            status, _, review_html = call_app(
+                self.app,
+                method="POST",
+                path="/cards/import-notebook/preview",
+                body=f"source_path={quote_plus(str(notebook_path))}&topic=llm&source_label=metadata.ipynb&split_mode=balanced",
+            )
+
+        self.assertEqual(status, "200 OK")
+        self.assertIn('name="topic_0" value="nlp"', review_html)
+        self.assertIn('name="tags_0" value="tokenizer, python, regex"', review_html)
 
     def test_import_notebook_can_regenerate_with_more_aggressive_split(self) -> None:
         notebook_path = self.root / "chapter.ipynb"
@@ -540,6 +578,59 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("def encode_text", second_solution)
         self.assertIn("Supporting context preserved", second_answer)
         self.assertIn("def split_words", second_answer)
+
+    def test_import_python_from_external_path_creates_standalone_candidates(self) -> None:
+        source_path = self.root / "tokenizer.py"
+        source_path.write_text(
+            "\n".join(
+                [
+                    '"""Tokenizer helpers."""',
+                    "",
+                    "import re",
+                    "",
+                    "def split_words(text: str) -> list[str]:",
+                    '    return re.findall(r"\\w+", text)',
+                    "",
+                    "def encode_text(text: str) -> dict[str, int]:",
+                    "    return {token: index for index, token in enumerate(split_words(text))}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(source_path))}&topic=llm&source_label=tokenizer.py&split_mode=aggressive",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Review Imported Source", review_html)
+        self.assertIn("<dd>py</dd>", review_html)
+        self.assertIn("Reimplement `split_words`", review_html)
+        self.assertIn("Reimplement `encode_text`", review_html)
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', review_html)
+        self.assertIsNotNone(draft_id)
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/create",
+            body=(
+                f"draft_id={draft_id.group(1)}"
+                "&keep_0=yes&title_0=Split+Words&topic_0=nlp&tags_0=python%2Ctokenizer"
+                "&keep_1=yes&title_1=Encode+Text&topic_1=nlp&tags_1=python%2Ctokenizer"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+
+        second = get_card_detail(self.config, 2)
+        second_solution = (Path(second.asset_path) / "solution.py").read_text(encoding="utf-8")
+        self.assertEqual(second.source_kind, "py")
+        self.assertIn("import re", second_solution)
+        self.assertIn("def split_words", second_solution)
+        self.assertIn("def encode_text", second_solution)
 
 
 if __name__ == "__main__":

@@ -110,6 +110,13 @@ body {
   margin-top: 16px;
 }
 
+.action-grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -234,4 +241,11 @@ textarea {
 
 .checkbox-row input {
   width: auto;
+}
+
+.candidate-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }

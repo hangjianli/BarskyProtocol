@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS cards (
     source_path TEXT NOT NULL DEFAULT '',
     source_mode TEXT NOT NULL DEFAULT '',
     source_label TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT '',
     source_cell_spec TEXT NOT NULL DEFAULT '',
     source_import_options TEXT NOT NULL DEFAULT '',
     asset_path TEXT NOT NULL DEFAULT '',
@@ -130,6 +131,7 @@ class CardDetail:
     source_path: str
     source_mode: str
     source_label: str
+    source_kind: str
     source_cell_spec: str
     source_import_options: str
     box: int
@@ -313,6 +315,8 @@ def _ensure_cards_columns(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE cards ADD COLUMN source_mode TEXT NOT NULL DEFAULT ''")
     if "source_label" not in columns:
         connection.execute("ALTER TABLE cards ADD COLUMN source_label TEXT NOT NULL DEFAULT ''")
+    if "source_kind" not in columns:
+        connection.execute("ALTER TABLE cards ADD COLUMN source_kind TEXT NOT NULL DEFAULT ''")
     if "source_cell_spec" not in columns:
         connection.execute("ALTER TABLE cards ADD COLUMN source_cell_spec TEXT NOT NULL DEFAULT ''")
     if "source_import_options" not in columns:
@@ -335,6 +339,7 @@ def add_concept_card(
     source_path: str = "",
     source_mode: str = "",
     source_label: str = "",
+    source_kind: str = "",
     source_cell_spec: str = "",
     source_import_options: str = "",
 ) -> int:
@@ -346,10 +351,10 @@ def add_concept_card(
             """
             INSERT INTO cards (
                 type, title, topic, tags, source, source_path, source_mode, source_label,
-                source_cell_spec, source_import_options, asset_path, box, lapse_count,
+                source_kind, source_cell_spec, source_import_options, asset_path, box, lapse_count,
                 created_at, updated_at, next_review_at, scheduler_name,
                 last_interval_days, last_schedule_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "concept",
@@ -360,6 +365,7 @@ def add_concept_card(
                 source_path.strip(),
                 source_mode.strip(),
                 source_label.strip(),
+                source_kind.strip(),
                 source_cell_spec.strip(),
                 source_import_options.strip(),
                 "",
@@ -392,6 +398,7 @@ def add_exercise_card(
     source_path: str = "",
     source_mode: str = "",
     source_label: str = "",
+    source_kind: str = "",
     source_cell_spec: str = "",
     source_import_options: str = "",
 ) -> int:
@@ -403,10 +410,10 @@ def add_exercise_card(
             """
             INSERT INTO cards (
                 type, title, topic, tags, source, source_path, source_mode, source_label,
-                source_cell_spec, source_import_options, asset_path, box, lapse_count,
+                source_kind, source_cell_spec, source_import_options, asset_path, box, lapse_count,
                 created_at, updated_at, next_review_at, scheduler_name,
                 last_interval_days, last_schedule_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "code_exercise",
@@ -417,6 +424,7 @@ def add_exercise_card(
                 source_path.strip(),
                 source_mode.strip(),
                 source_label.strip(),
+                source_kind.strip(),
                 source_cell_spec.strip(),
                 source_import_options.strip(),
                 str(files.asset_dir),
@@ -516,6 +524,7 @@ def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
         source_path=str(row["source_path"]),
         source_mode=str(row["source_mode"]),
         source_label=str(row["source_label"]),
+        source_kind=str(row["source_kind"]),
         source_cell_spec=str(row["source_cell_spec"]),
         source_import_options=str(row["source_import_options"]),
         box=int(row["box"]),

@@ -18,8 +18,8 @@ from study.notebooks import (
     build_import_draft,
     delete_import_draft,
     load_import_draft,
-    load_notebook_text_from_path,
-    save_managed_notebook,
+    load_source_text_from_path,
+    save_managed_source,
 )
 from study.storage import (
     add_concept_card,
@@ -116,10 +116,26 @@ class StudyWebApp:
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
           <div class="actions">
             <a class="button" href="/review?mode=mixed">Start Review</a>
-            <a class="button button-secondary" href="/review?mode=concept">Concept Queue</a>
-            <a class="button button-secondary" href="/review?mode=exercise">Start Exercise Review</a>
-            <a class="button button-secondary" href="/cards/new/concept">Add Concept Card</a>
-            <a class="button button-secondary" href="/cards/new/exercise">Add Exercise</a>
+          </div>
+          <div class="action-grid">
+            <label>
+              <span>Review queue</span>
+              <select onchange="if (this.value) window.location = this.value;">
+                <option value="">Choose a queue</option>
+                <option value="/review?mode=mixed">Mixed review</option>
+                <option value="/review?mode=concept">Concept queue</option>
+                <option value="/review?mode=exercise">Exercise queue</option>
+              </select>
+            </label>
+            <label>
+              <span>Create</span>
+              <select onchange="if (this.value) window.location = this.value;">
+                <option value="">Choose a capture flow</option>
+                <option value="/cards/new/concept">New concept card</option>
+                <option value="/cards/new/exercise">New exercise</option>
+                <option value="/cards/import-notebook">Import source</option>
+              </select>
+            </label>
           </div>
         </section>
         <section class="grid">
@@ -226,6 +242,7 @@ class StudyWebApp:
             <div><dt>Source label</dt><dd>{html.escape(card.source_label or card.source or '-')}</dd></div>
             <div><dt>Source path</dt><dd>{html.escape(card.source_path or '-')}</dd></div>
             <div><dt>Source mode</dt><dd>{html.escape(card.source_mode or '-')}</dd></div>
+            <div><dt>Source kind</dt><dd>{html.escape(card.source_kind or '-')}</dd></div>
             <div><dt>Source cells</dt><dd>{html.escape(card.source_cell_spec or '-')}</dd></div>
             <div><dt>Import options</dt><dd>{html.escape(card.source_import_options or '-')}</dd></div>
           </dl>
@@ -363,23 +380,24 @@ class StudyWebApp:
         error_html = ""
         if errors:
             error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
-            error_html = f'<section class="panel panel-error"><h2>Cannot parse this notebook yet</h2><ul class="errors">{error_items}</ul></section>'
+            error_html = f'<section class="panel panel-error"><h2>Cannot parse this source yet</h2><ul class="errors">{error_items}</ul></section>'
 
         content = f"""
         {error_html}
         <section class="panel">
-          <h1>Import Notebook</h1>
-          <p class="muted">Provide a notebook path for no-copy import, or drop a file to create a managed source snapshot.</p>
+          <h1>Import Source</h1>
+          <p class="muted">Provide a `.ipynb` or `.py` path for no-copy import, or drop a file to create a managed source snapshot.</p>
           <form method="post" action="/cards/import-notebook/preview" class="form-stack" id="notebook-import-form">
-            {self._input("source_path", "Notebook path", values.get("source_path", ""))}
+            {self._input("source_path", "Source path", values.get("source_path", ""))}
             {self._input("topic", "Default topic", values.get("topic", ""))}
             {self._input("source_label", "Source label", values.get("source_label", ""))}
             {self._select("split_mode", "Split mode", values.get("split_mode", self.config.notebook_split_mode), [("balanced", "Balanced"), ("aggressive", "Aggressive")])}
-            <input type="hidden" name="notebook_json" id="notebook-json" value="">
+            <input type="hidden" name="source_text" id="source-text" value="">
+            <input type="hidden" name="source_kind" id="source-kind" value="">
             <section class="dropzone" id="notebook-dropzone">
-              <h2>Drop .ipynb or path</h2>
-              <p class="muted">Drop a notebook file, paste a path, or click to choose a local notebook file.</p>
-              <input type="file" id="notebook-file" accept=".ipynb">
+              <h2>Drop `.ipynb`, `.py`, or a path</h2>
+              <p class="muted">Drop a supported source file, paste a path, or click to choose a local file.</p>
+              <input type="file" id="notebook-file" accept=".ipynb,.py">
             </section>
             <div class="actions">
               <button class="button" type="submit">Preview Candidates</button>
@@ -389,7 +407,7 @@ class StudyWebApp:
         </section>
         {self._import_notebook_script()}
         """
-        return self.html_page("Import Notebook", content)
+        return self.html_page("Import Source", content)
 
     def handle_new_concept_submit(self, environ: dict) -> Response:
         form = self._parse_form(environ)
@@ -453,25 +471,26 @@ class StudyWebApp:
         form = self._parse_form(environ)
         values = {
             key: self._first(form, key)
-            for key in ("source_path", "topic", "source_label", "notebook_json", "split_mode")
+            for key in ("source_path", "topic", "source_label", "source_text", "source_kind", "split_mode")
         }
         try:
-            source_path, source_mode, source_label, notebook_text = self._resolve_notebook_source(values)
+            source_path, source_mode, source_label, source_kind, source_text = self._resolve_source(values)
             draft = build_import_draft(
                 self.config,
                 source_path=source_path,
                 source_mode=source_mode,
                 source_label=source_label,
+                source_kind=source_kind,
                 topic=values["topic"],
                 split_mode=self._normalized_split_mode(values.get("split_mode", "")),
-                notebook_text=notebook_text,
+                source_text=source_text,
             )
         except (ValueError, json.JSONDecodeError) as exc:
             return self.handle_import_notebook_form(errors=[str(exc)], values=values)
 
         if not draft.candidates:
             return self.handle_import_notebook_form(
-                errors=["No code exercise candidates were found in this notebook."],
+                errors=["No code exercise candidates were found in this source."],
                 values=values,
             )
         return self.render_import_review_page(draft)
@@ -485,17 +504,21 @@ class StudyWebApp:
         candidate_sections = []
         for index, candidate in enumerate(draft.candidates):
             topic_value = candidate.topic or draft.topic
+            tags_value = ", ".join(candidate.tags)
             candidate_sections.append(
                 f"""
-                <article class="panel">
+                <article class="panel import-candidate" data-candidate-index="{index}">
                   <h2>Candidate {index + 1}</h2>
-                  <div class="checkbox-row">
+                  <div class="candidate-actions">
+                    <div class="checkbox-row">
                     <input type="checkbox" id="keep_{index}" name="keep_{index}" value="yes" checked>
                     <label for="keep_{index}">Create this exercise card</label>
+                    </div>
+                    <button class="button button-danger" type="button" data-delete-candidate="{index}">Delete Candidate</button>
                   </div>
                   {self._input(f"title_{index}", "Title", candidate.title)}
                   {self._input(f"topic_{index}", "Topic", topic_value)}
-                  {self._input(f"tags_{index}", "Tags", "")}
+                  {self._input(f"tags_{index}", "Tags", tags_value)}
                   <p class="muted">Source section: {html.escape(candidate.source_cell_spec)}</p>
                   <details class="answer-block" open>
                     <summary>Prompt preview</summary>
@@ -512,20 +535,22 @@ class StudyWebApp:
         content = f"""
         {error_html}
         <section class="panel">
-          <h1>Review Imported Notebook</h1>
+          <h1>Review Imported Source</h1>
           <dl class="stats">
-            <div><dt>Notebook</dt><dd>{html.escape(draft.source_label)}</dd></div>
+            <div><dt>Source</dt><dd>{html.escape(draft.source_label)}</dd></div>
             <div><dt>Source path</dt><dd>{html.escape(draft.source_path)}</dd></div>
             <div><dt>Source mode</dt><dd>{html.escape(draft.source_mode)}</dd></div>
+            <div><dt>Source kind</dt><dd>{html.escape(draft.source_kind)}</dd></div>
             <div><dt>Split mode</dt><dd>{html.escape(draft.split_mode)}</dd></div>
-            <div><dt>Markdown cells</dt><dd>{draft.markdown_cells}</dd></div>
-            <div><dt>Code cells</dt><dd>{draft.code_cells}</dd></div>
+            <div><dt>Source title</dt><dd>{html.escape(draft.source_title)}</dd></div>
+            <div><dt>Prose sections</dt><dd>{draft.prose_sections}</dd></div>
+            <div><dt>Code sections</dt><dd>{draft.code_sections}</dd></div>
             <div><dt>Candidates</dt><dd>{len(draft.candidates)}</dd></div>
           </dl>
         </section>
         <section class="panel">
           <h2>Regenerate Draft</h2>
-          <p class="muted">Change split aggressiveness and rebuild the draft from the same notebook source.</p>
+          <p class="muted">Change split aggressiveness and rebuild the draft from the same source.</p>
           <form method="post" action="/cards/import-notebook/regenerate" class="form-stack">
             <input type="hidden" name="draft_id" value="{html.escape(draft.draft_id)}">
             {self._select("split_mode", "Split mode", draft.split_mode, [("balanced", "Balanced"), ("aggressive", "Aggressive")])}
@@ -542,23 +567,25 @@ class StudyWebApp:
             <a class="button button-secondary" href="/cards/import-notebook">Start Over</a>
           </div>
         </form>
+        {self._import_review_script()}
         """
-        return self.html_page("Review Notebook Import", content)
+        return self.html_page("Review Source Import", content)
 
     def handle_import_notebook_regenerate(self, environ: dict) -> Response:
         form = self._parse_form(environ)
         draft_id = self._first(form, "draft_id")
         try:
             existing_draft = load_import_draft(self.config, draft_id)
-            source_path, source_mode, source_label, notebook_text = self._resolve_draft_source(existing_draft)
+            source_path, source_mode, source_label, source_kind, source_text = self._resolve_draft_source(existing_draft)
             regenerated = build_import_draft(
                 self.config,
                 source_path=source_path,
                 source_mode=source_mode,
                 source_label=source_label,
+                source_kind=source_kind,
                 topic=existing_draft.topic,
                 split_mode=self._normalized_split_mode(self._first(form, "split_mode")),
-                notebook_text=notebook_text,
+                source_text=source_text,
                 draft_id=existing_draft.draft_id,
             )
         except (ValueError, json.JSONDecodeError) as exc:
@@ -612,8 +639,9 @@ class StudyWebApp:
                 source_path=draft.source_path,
                 source_mode=draft.source_mode,
                 source_label=draft.source_label,
+                source_kind=draft.source_kind,
                 source_cell_spec=candidate.source_cell_spec,
-                source_import_options=json.dumps({"split_mode": draft.split_mode}),
+                source_import_options=json.dumps({"split_mode": draft.split_mode, "source_kind": draft.source_kind}),
                 files=files,
             )
             created_ids.append(card_id)
@@ -695,8 +723,8 @@ class StudyWebApp:
           <form method="post" action="/review/{int(attempt['id'])}/result" class="form-stack">
             {self._textarea("user_answer", "Type your answer before grading", user_answer, rows=8)}
             <div class="actions">
-              <button class="button" type="submit" name="action" value="grade">Grade with LLM</button>
-              <button class="button button-secondary" type="submit" name="action" value="incomplete">Mark Incomplete</button>
+              {self._select("action", "Review action", "grade", [("grade", "Grade with LLM"), ("incomplete", "Mark Incomplete")])}
+              <button class="button" type="submit">Submit Action</button>
             </div>
           </form>
         </section>
@@ -749,9 +777,11 @@ class StudyWebApp:
             <div><dt>Edit file</dt><dd>{html.escape(attempt.entrypoint)}</dd></div>
             <div><dt>Tests</dt><dd>{html.escape(Path(attempt.tests_path).name)}</dd></div>
           </dl>
-          <form method="post" action="/review/{attempt_id}/workspace" class="actions">
-            <button class="button" type="submit" name="action" value="create">{'Reset Workspace' if attempt.workspace_path else 'Create Workspace'}</button>
-            <button class="button button-secondary" type="submit" name="action" value="incomplete">Mark Incomplete</button>
+          <form method="post" action="/review/{attempt_id}/workspace" class="form-stack">
+            {self._select("action", "Workspace action", "create", [("create", "Reset Workspace" if attempt.workspace_path else "Create Workspace"), ("incomplete", "Mark Incomplete")])}
+            <div class="actions">
+              <button class="button" type="submit">Apply Workspace Action</button>
+            </div>
           </form>
         </section>
         <section class="panel">
@@ -1008,23 +1038,30 @@ class StudyWebApp:
             f'<select name="{html.escape(name)}">{option_html}</select></label>'
         )
 
-    def _resolve_notebook_source(self, values: dict[str, str]) -> tuple[str, str, str, str]:
+    def _resolve_source(self, values: dict[str, str]) -> tuple[str, str, str, str, str]:
         source_path = values["source_path"].strip()
-        notebook_json = values["notebook_json"].strip()
+        source_text = values["source_text"].strip()
+        source_kind = values["source_kind"].strip()
         source_label = values["source_label"].strip()
 
         if source_path:
-            resolved_path, notebook_text = load_notebook_text_from_path(source_path)
-            return str(resolved_path), "external_path", source_label or resolved_path.name, notebook_text
-        if notebook_json:
-            label = source_label or "imported-notebook.ipynb"
-            managed_path = save_managed_notebook(self.config, source_label=label, notebook_text=notebook_json)
-            return str(managed_path), "managed_copy", label, notebook_json
-        raise ValueError("Provide a notebook path or drop a notebook file first.")
+            resolved_path, loaded_text, resolved_kind = load_source_text_from_path(source_path)
+            return str(resolved_path), "external_path", source_label or resolved_path.name, resolved_kind, loaded_text
+        if source_text:
+            normalized_kind = source_kind.strip().lower().lstrip(".") or "ipynb"
+            label = source_label or f"imported-source.{normalized_kind}"
+            managed_path = save_managed_source(
+                self.config,
+                source_label=label,
+                source_text=source_text,
+                source_kind=normalized_kind,
+            )
+            return str(managed_path), "managed_copy", label, normalized_kind, source_text
+        raise ValueError("Provide a source path or drop a .ipynb or .py file first.")
 
-    def _resolve_draft_source(self, draft: object) -> tuple[str, str, str, str]:
-        resolved_path, notebook_text = load_notebook_text_from_path(draft.source_path)
-        return str(resolved_path), draft.source_mode, draft.source_label, notebook_text
+    def _resolve_draft_source(self, draft: object) -> tuple[str, str, str, str, str]:
+        resolved_path, source_text, source_kind = load_source_text_from_path(draft.source_path)
+        return str(resolved_path), draft.source_mode, draft.source_label, source_kind, source_text
 
     def _normalized_split_mode(self, raw_value: str) -> str:
         return raw_value if raw_value in {"balanced", "aggressive"} else self.config.notebook_split_mode
@@ -1035,14 +1072,22 @@ class StudyWebApp:
         (() => {
           const dropzone = document.getElementById("notebook-dropzone");
           const fileInput = document.getElementById("notebook-file");
-          const jsonInput = document.getElementById("notebook-json");
+          const sourceInput = document.getElementById("source-text");
+          const kindInput = document.getElementById("source-kind");
           const pathInput = document.querySelector('input[name="source_path"]');
           const labelInput = document.querySelector('input[name="source_label"]');
+
+          function inferKind(name) {
+            const lower = name.toLowerCase();
+            if (lower.endsWith(".py")) return "py";
+            return "ipynb";
+          }
 
           async function loadFile(file) {
             if (!file) return;
             const text = await file.text();
-            jsonInput.value = text;
+            sourceInput.value = text;
+            kindInput.value = inferKind(file.name);
             if (!labelInput.value) labelInput.value = file.name;
             pathInput.value = "";
           }
@@ -1069,12 +1114,29 @@ class StudyWebApp:
             const text = event.dataTransfer.getData("text/plain").trim();
             if (text) {
               pathInput.value = text;
-              jsonInput.value = "";
+              sourceInput.value = "";
+              kindInput.value = "";
               if (!labelInput.value) {
                 const parts = text.split(/[\\\\/]/);
                 labelInput.value = parts[parts.length - 1];
               }
             }
+          });
+        })();
+        </script>
+        """
+
+    def _import_review_script(self) -> str:
+        return """
+        <script>
+        (() => {
+          document.querySelectorAll("[data-delete-candidate]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const article = button.closest(".import-candidate");
+              if (!article) return;
+              // Removing the candidate from the form prevents it from being created.
+              article.remove();
+            });
           });
         })();
         </script>
