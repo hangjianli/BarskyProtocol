@@ -109,4 +109,6 @@ The web UI should stay:
 - server-rendered first
 - one clear action per screen
 - light on button clutter, with secondary actions collapsed into dropdowns where useful
+- keep global navigation compact, and avoid duplicating the dashboard's primary review action in the top bar
+- keep the dashboard hero to one primary review CTA plus one compact quick-actions control
 - free of embedded IDE complexity in v1

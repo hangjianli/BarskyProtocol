@@ -11,12 +11,17 @@
       <nav class="nav">
         <a href="/">Dashboard</a>
         <a href="/cards">Cards</a>
-        <a href="/patterns">Patterns</a>
-        <a href="/recommendations">Recommendations</a>
-        <a href="/cards/new/concept">New Concept</a>
-        <a href="/cards/new/exercise">New Exercise</a>
         <a href="/cards/import-notebook">Import Source</a>
-        <a href="/review?mode=mixed">Review</a>
+        <label class="nav-select">
+          <span>Explore</span>
+          <select onchange="if (this.value) window.location = this.value;">
+            <option value="">More</option>
+            <option value="/patterns">Patterns</option>
+            <option value="/recommendations">Recommendations</option>
+            <option value="/cards/new/concept">New Concept</option>
+            <option value="/cards/new/exercise">New Exercise</option>
+          </select>
+        </label>
       </nav>
       <main class="content">
         $content

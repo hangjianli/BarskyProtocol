@@ -29,6 +29,8 @@ body {
 
 .nav {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 18px;
   margin-bottom: 28px;
   font-size: 0.95rem;
@@ -41,6 +43,23 @@ body {
 
 .nav a:hover {
   color: var(--text);
+}
+
+.nav-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.nav-select span {
+  white-space: nowrap;
+}
+
+.nav-select select {
+  width: auto;
+  min-width: 120px;
+  padding: 8px 10px;
 }
 
 .content {
@@ -110,11 +129,17 @@ body {
   margin-top: 16px;
 }
 
-.action-grid {
-  display: grid;
-  gap: 14px;
+.hero-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
   margin-top: 18px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.hero-select {
+  min-width: 240px;
+  max-width: 320px;
 }
 
 .button {

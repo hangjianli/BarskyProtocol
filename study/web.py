@@ -114,26 +114,21 @@ class StudyWebApp:
         <section class="hero">
           <h1>BarskyProtocol</h1>
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
-          <div class="actions">
+          <div class="hero-controls">
             <a class="button" href="/review?mode=mixed">Start Review</a>
-          </div>
-          <div class="action-grid">
-            <label>
-              <span>Review queue</span>
+            <label class="hero-select">
+              <span>Quick actions</span>
               <select onchange="if (this.value) window.location = this.value;">
-                <option value="">Choose a queue</option>
-                <option value="/review?mode=mixed">Mixed review</option>
-                <option value="/review?mode=concept">Concept queue</option>
-                <option value="/review?mode=exercise">Exercise queue</option>
-              </select>
-            </label>
-            <label>
-              <span>Create</span>
-              <select onchange="if (this.value) window.location = this.value;">
-                <option value="">Choose a capture flow</option>
-                <option value="/cards/new/concept">New concept card</option>
-                <option value="/cards/new/exercise">New exercise</option>
-                <option value="/cards/import-notebook">Import source</option>
+                <option value="">Choose an action</option>
+                <optgroup label="Review">
+                  <option value="/review?mode=concept">Concept queue</option>
+                  <option value="/review?mode=exercise">Exercise queue</option>
+                </optgroup>
+                <optgroup label="Create">
+                  <option value="/cards/new/concept">New concept card</option>
+                  <option value="/cards/new/exercise">New exercise</option>
+                  <option value="/cards/import-notebook">Import source</option>
+                </optgroup>
               </select>
             </label>
           </div>

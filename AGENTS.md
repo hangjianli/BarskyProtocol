@@ -22,6 +22,7 @@ Tests use `unittest`. Add or update tests for any behavior change in scheduling,
 
 ## Commit & Pull Request Guidelines
 Follow the existing commit style: concise, imperative, and scoped, e.g. `feat: add phase 1 web study workflow` or `chore: bootstrap v1 study CLI`. Keep commits focused. For pull requests, include a short summary, user-visible behavior changes, verification steps, and screenshots for UI changes. Link the relevant design section in `DESIGN.md` when the change implements or revises architecture.
+If a small follow-up change is substantially the same as the immediately previous local commit, prefer `git commit --amend` instead of creating a near-duplicate commit.
 
 Future feature work should not be developed directly on `main`. Start from `main`, create a dedicated feature branch, implement the work there, then raise a pull request and conduct code review before merging.
 When PR review comments are actionable and unambiguous, read them and address them proactively without waiting for additional user supervision.
