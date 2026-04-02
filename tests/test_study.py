@@ -488,7 +488,7 @@ class StudyWorkflowTests(unittest.TestCase):
                         {"cell_type": "markdown", "source": ["# Tokenizer\n", "Build the tokenizer pieces.\n"]},
                         {"cell_type": "code", "source": ["import re\n"]},
                         {"cell_type": "code", "source": ["def split_words(text: str) -> list[str]:\n", "    return re.findall(r\"\\w+\", text)\n"]},
-                        {"cell_type": "code", "source": ["def encode(tokens: list[str]) -> dict[str, int]:\n", "    return {token: index for index, token in enumerate(tokens)}\n"]},
+                        {"cell_type": "code", "source": ["def encode_text(text: str) -> dict[str, int]:\n", "    return {token: index for index, token in enumerate(split_words(text))}\n"]},
                     ]
                 }
             ),
@@ -517,6 +517,29 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn(">aggressive<", aggressive_html)
         self.assertIn("<dd>2</dd>", aggressive_html)
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', aggressive_html)
+        self.assertIsNotNone(draft_id)
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/create",
+            body=(
+                f"draft_id={draft_id.group(1)}"
+                "&keep_0=yes&title_0=Split+Words&topic_0=llm&tags_0=python"
+                "&keep_1=yes&title_1=Encode+Text&topic_1=llm&tags_1=python"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+        first = get_card_detail(self.config, 1)
+        second = get_card_detail(self.config, 2)
+        second_solution = (Path(second.asset_path) / "solution.py").read_text(encoding="utf-8")
+        second_answer = (Path(second.asset_path) / "answer.py").read_text(encoding="utf-8")
+        self.assertIn("import re", second_solution)
+        self.assertIn("def split_words", second_solution)
+        self.assertIn("def encode_text", second_solution)
+        self.assertIn("Supporting context preserved", second_answer)
+        self.assertIn("def split_words", second_answer)
 
 
 if __name__ == "__main__":

@@ -214,6 +214,8 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
     current_notes: list[str] = []
     setup_code: list[str] = []
     setup_indexes: list[int] = []
+    prior_code: list[str] = []
+    prior_indexes: list[int] = []
 
     for index, cell in enumerate(cells, start=1):
         cell_type = str(cell.get("cell_type", ""))
@@ -228,6 +230,8 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
                 current_notes = [body] if body else []
                 setup_code = []
                 setup_indexes = [index]
+                prior_code = []
+                prior_indexes = []
             else:
                 current_notes.append(raw_source)
                 setup_indexes.append(index)
@@ -243,28 +247,33 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
             setup_indexes.append(index)
             continue
 
-        cell_indexes = setup_indexes + [index]
+        support_code = setup_code + prior_code
+        support_indexes = setup_indexes + prior_indexes
+        cell_indexes = support_indexes + [index]
         notes = list(current_notes)
-        if setup_code:
-            notes.append("Supporting setup code:\n\n```python\n" + "\n\n".join(setup_code) + "\n```")
+        if support_code:
+            notes.append("Supporting context preserved in the exercise files:\n\n```python\n" + "\n\n".join(support_code) + "\n```")
 
         title = current_title or _infer_code_title(raw_source, len(candidates) + 1)
         if current_title:
             title = f"{title} · Part {len([c for c in candidates if c.title.startswith(current_title)]) + 1}"
         cell_spec = _format_cell_spec(cell_indexes)
         names = _infer_top_level_names(raw_source)
+        full_solution = "\n\n".join(block for block in [*support_code, raw_source] if block.strip()).strip()
         candidates.append(
             NotebookCandidate(
                 title=title,
                 prompt=_build_prompt(title, notes, raw_source, cell_spec),
                 topic=default_topic.strip(),
-                solution_code=f"{raw_source}\n",
-                answer_template=_build_answer_template(title, names, cell_spec),
+                solution_code=f"{full_solution}\n",
+                answer_template=_build_answer_template(title, names, cell_spec, support_code=support_code),
                 tests_template=_build_tests_template(names, cell_spec),
                 source_cell_spec=cell_spec,
                 cell_indexes=cell_indexes,
             )
         )
+        prior_code = support_code + [raw_source]
+        prior_indexes = cell_indexes
         setup_code = []
         setup_indexes = []
 
@@ -368,12 +377,27 @@ def _build_prompt(title: str, notes: list[str], code: str, cell_spec: str) -> st
     return "\n".join(prompt_lines).strip()
 
 
-def _build_answer_template(title: str, names: list[str], cell_spec: str) -> str:
+def _build_answer_template(
+    title: str,
+    names: list[str],
+    cell_spec: str,
+    *,
+    support_code: list[str] | None = None,
+) -> str:
     lines = [
         f'"""Reimplement the notebook-derived exercise: {title}."""',
         "",
         f"# Source section: {cell_spec or 'unknown cells'}",
     ]
+    if support_code:
+        lines.extend(
+            [
+                "# Supporting context preserved so this exercise stays standalone.",
+                "",
+                "\n\n".join(support_code).rstrip(),
+                "",
+            ]
+        )
     if names:
         lines.append("# Recreate these top-level objects from memory:")
         lines.extend(f"# - {name}" for name in names)
