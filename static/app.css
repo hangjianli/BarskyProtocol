@@ -208,6 +208,23 @@ textarea {
   margin-top: 14px;
 }
 
+.markdown-content > :first-child {
+  margin-top: 0;
+}
+
+.markdown-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content pre {
+  margin: 14px 0 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 22px;
+}
+
 .code-block {
   margin: 0;
   padding: 16px;
@@ -218,6 +235,46 @@ textarea {
   font-size: 0.95rem;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.source-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-radius: 12px;
+  background: #f2eee3;
+  overflow: hidden;
+}
+
+.source-line {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 12px;
+  padding: 0 16px;
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.source-line + .source-line {
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent 30%);
+}
+
+.source-line code {
+  display: block;
+  padding: 8px 0;
+  white-space: pre-wrap;
+}
+
+.source-gutter {
+  padding: 8px 0;
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+}
+
+.source-line-target {
+  background: #e6eefc;
 }
 
 .status {

@@ -32,6 +32,8 @@ cards/
 - `study/grading.py`: LLM-based grading and reusable model-call helpers
 - `study/validators.py`: deterministic exercise validation
 - `study/analytics.py`: failure clustering and recommendation generation
+- prompt markdown rendering and source-link rewriting live in `study/web.py`
+  because they depend on route generation plus card-bound provenance
 
 ## Main Routes
 
@@ -41,12 +43,14 @@ cards/
 - `/cards`
 - `/cards/:card_id`
 - `/cards/:card_id/delete`
+- `/cards/:card_id/source`
 - `/cards/new/concept`
 - `/cards/new/exercise`
 - `/cards/import-notebook`
 - `/cards/import-text`
 - `/patterns`
 - `/recommendations`
+- `/review/:attempt_id/source`
 
 ```mermaid
 flowchart TD
@@ -60,7 +64,9 @@ flowchart TD
     C --> J["/cards/import-text"]
     C --> K["/cards/:card_id"]
     K --> L["/cards/:card_id/delete"]
+    K --> M["/cards/:card_id/source"]
     B --> I["/review/:attempt_id"]
+    I --> N["/review/:attempt_id/source"]
 ```
 
 ## Constraints

@@ -16,6 +16,9 @@ The scheduler decides what is due. The UI decides how it is presented.
 ## Concept Review
 
 1. Show the prompt.
+2. Render prompt markdown in the browser instead of escaping it as plain text.
+3. Convert supported source references into in-app source-view links.
+4. Let the user inspect the bound source context without leaving the app.
 2. Let the user type an answer.
 3. Grade the answer with the LLM.
 4. Record `pass`, `fail`, or `incomplete`.
@@ -27,7 +30,7 @@ Concept review is direct and single-page.
 
 1. Create a fresh temp workspace.
 2. Copy canonical exercise assets into that workspace.
-3. Show the prompt, workspace path, and editable target file.
+3. Show the rendered prompt, workspace path, editable target file, and any bound source links.
 4. The user edits locally in their own editor.
 5. The app runs validation from the browser.
 6. The app records `pass`, `fail`, or `incomplete`.
@@ -62,6 +65,25 @@ Design rule:
 
 - deterministic tests are the primary source of truth
 - LLM review is additive, not foundational
+
+## Prompt and Source Rendering
+
+Prompt rendering should support markdown in the browser so imported cards do not
+show raw markdown syntax.
+
+Rules:
+
+- render markdown to HTML for prompt display
+- strip image markup from rendered prompts in v1
+- allow readable link text for source references
+- rewrite supported local source links into in-app viewer routes
+- fall back safely when a source link cannot be resolved
+
+The source viewer should be:
+
+- read-only
+- scoped to card-bound source files only
+- usable from both card detail pages and review pages
 
 ## Workspace Lifecycle
 

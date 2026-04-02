@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from unittest.mock import patch
 from wsgiref.util import setup_testing_defaults
 
@@ -193,6 +193,82 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Your answer", result_html)
         self.assertIn("Scheduler", result_html)
         self.assertIn("reset the card to box 1", result_html)
+
+    def test_concept_review_renders_card_bound_source_links(self) -> None:
+        source_file = self.root / "bpe_openai_gpt2.py"
+        source_file.write_text(
+            "\n".join(
+                [f"# line {index}" for index in range(1, 58)]
+                + [
+                    "def get_pairs(word):",
+                    "    pairs = set()",
+                    "    prev_char = word[0]",
+                    "    for char in word[1:]:",
+                    "        pairs.add((prev_char, char))",
+                    "    return pairs",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        prompt = (
+            "What does "
+            f"[get_pairs(word)](cci:1://file://{source_file}:58:0-63:16)"
+            " return, and why is it needed?"
+        )
+        add_concept_card(
+            self.config,
+            title="BPE pairs",
+            prompt=prompt,
+            answer="It returns adjacent symbol pairs.",
+            topic="bpe_tokenizer",
+            source=str(source_file),
+            source_path=str(source_file),
+            source_label=source_file.name,
+            source_kind="py",
+        )
+
+        attempt = start_review_attempt(self.config, card_type="concept")
+        status, _, review_html = call_app(self.app, method="GET", path=f"/review/{int(attempt['id'])}")
+        self.assertEqual(status, "200 OK")
+        self.assertIn(">get_pairs(word)</a>", review_html)
+        self.assertIn(f"/review/{int(attempt['id'])}/source?", review_html)
+        self.assertNotIn("cci:1://", review_html)
+
+        status, _, source_html = call_app(
+            self.app,
+            method="GET",
+            path=f"/review/{int(attempt['id'])}/source",
+            query_string=urlencode({"path": str(source_file), "start": "58", "end": "63"}),
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Source View", source_html)
+        self.assertIn("def get_pairs(word):", source_html)
+        self.assertIn("source-line-target", source_html)
+
+    def test_source_view_rejects_paths_outside_card_bound_sources(self) -> None:
+        source_file = self.root / "allowed.py"
+        source_file.write_text("def allowed():\n    return True\n", encoding="utf-8")
+        other_file = self.root / "other.py"
+        other_file.write_text("def blocked():\n    return False\n", encoding="utf-8")
+        add_concept_card(
+            self.config,
+            title="Bound source",
+            prompt="See [allowed](file:///tmp/placeholder.py)",
+            answer="A",
+            source=str(source_file),
+            source_path=str(source_file),
+            source_label=source_file.name,
+            source_kind="py",
+        )
+
+        attempt = start_review_attempt(self.config, card_type="concept")
+        status, _, _ = call_app(
+            self.app,
+            method="GET",
+            path=f"/review/{int(attempt['id'])}/source",
+            query_string=urlencode({"path": str(other_file)}),
+        )
+        self.assertEqual(status, "404 Not Found")
 
     def test_completed_attempt_page_is_stable(self) -> None:
         add_concept_card(self.config, title="Mutex", prompt="Q", answer="A")

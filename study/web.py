@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 from typing import Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote, urlencode
 from wsgiref.simple_server import make_server
 
 from study.analytics import build_pattern_snapshot, build_recommendations
@@ -48,6 +48,13 @@ class Response:
     body: bytes
 
 
+@dataclass(frozen=True)
+class SourceReference:
+    path: Path
+    start_line: int | None
+    end_line: int | None
+
+
 class StudyWebApp:
     def __init__(self, config: StudyConfig) -> None:
         self.config = config
@@ -63,6 +70,8 @@ class StudyWebApp:
             response = self.handle_dashboard()
         elif method == "GET" and path == "/cards":
             response = self.handle_cards()
+        elif method == "GET" and re.fullmatch(r"/cards/\d+/source", path):
+            response = self.handle_card_source_view(int(path.split("/")[-2]), query)
         elif method == "GET" and re.fullmatch(r"/cards/\d+", path):
             response = self.handle_card_detail(int(path.rsplit("/", 1)[-1]))
         elif method == "POST" and re.fullmatch(r"/cards/\d+/delete", path):
@@ -93,6 +102,8 @@ class StudyWebApp:
             response = self.handle_recommendations()
         elif method == "GET" and path == "/review":
             response = self.handle_start_review(query)
+        elif method == "GET" and re.fullmatch(r"/review/\d+/source", path):
+            response = self.handle_review_source_view(int(path.split("/")[-2]), query)
         elif method == "GET" and re.fullmatch(r"/review/\d+", path):
             response = self.handle_review_page(int(path.rsplit("/", 1)[-1]))
         elif method == "POST" and re.fullmatch(r"/review/\d+/result", path):
@@ -214,10 +225,10 @@ class StudyWebApp:
             prompt_block = f"""
             <section class="panel">
               <h2>Prompt</h2>
-              <p>{html.escape(card.prompt or '')}</p>
+              <div class="markdown-content">{self._render_markdown(card.prompt or '', card_id=card.id)}</div>
               <details class="answer-block">
                 <summary>Reveal answer</summary>
-                <p>{html.escape(card.answer or '')}</p>
+                <div class="markdown-content">{self._render_markdown(card.answer or '', card_id=card.id)}</div>
               </details>
             </section>
             """
@@ -272,6 +283,31 @@ class StudyWebApp:
         if not delete_card(self.config, card_id):
             return self.text("404 Not Found", status="404 Not Found")
         return self.redirect("/cards")
+
+    def handle_card_source_view(self, card_id: int, query: dict[str, list[str]]) -> Response:
+        card = get_card_detail(self.config, card_id)
+        if card is None:
+            return self.text("404 Not Found", status="404 Not Found")
+        return self._render_source_view(
+            card=card,
+            query=query,
+            back_href=f"/cards/{card_id}",
+            source_title=card.title,
+        )
+
+    def handle_review_source_view(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
+        attempt = get_review_attempt(self.config, attempt_id)
+        if attempt is None:
+            return self.text("404 Not Found", status="404 Not Found")
+        card = get_card_detail(self.config, int(attempt["card_id"]))
+        if card is None:
+            return self.text("404 Not Found", status="404 Not Found")
+        return self._render_source_view(
+            card=card,
+            query=query,
+            back_href=f"/review/{attempt_id}",
+            source_title=str(attempt["title"]),
+        )
 
     def handle_patterns(self) -> Response:
         snapshot = build_pattern_snapshot(self.config)
@@ -780,7 +816,7 @@ class StudyWebApp:
         </section>
         <section class="panel">
           <h2>Prompt</h2>
-          <p>{html.escape(str(attempt['prompt']))}</p>
+          <div class="markdown-content">{self._render_markdown(str(attempt['prompt']), card_id=int(attempt['card_id']), attempt_id=int(attempt['id']))}</div>
         </section>
         <section class="panel">
           <h2>Your Answer</h2>
@@ -831,7 +867,7 @@ class StudyWebApp:
         </section>
         <section class="panel">
           <h2>Prompt</h2>
-          <pre class="code-block">{html.escape(attempt.prompt)}</pre>
+          <div class="markdown-content">{self._render_markdown(attempt.prompt, card_id=attempt.card_id, attempt_id=attempt.attempt_id)}</div>
         </section>
         <section class="panel">
           <h2>Workspace</h2>
@@ -1088,6 +1124,318 @@ class StudyWebApp:
 
         # Due dates only need the calendar day in the study UI.
         return parsed.astimezone().strftime("%Y-%m-%d")
+
+    def _render_source_view(
+        self,
+        *,
+        card: object,
+        query: dict[str, list[str]],
+        back_href: str,
+        source_title: str,
+    ) -> Response:
+        raw_path = query.get("path", [""])[0].strip()
+        if not raw_path:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        resolved_path = Path(unquote(raw_path)).expanduser().resolve()
+        source_path = self._resolve_bound_source_path(card, resolved_path)
+        if source_path is None or not source_path.is_file():
+            return self.text("404 Not Found", status="404 Not Found")
+
+        start_line = self._optional_int(query.get("start", [""])[0])
+        end_line = self._optional_int(query.get("end", [""])[0]) or start_line
+        file_lines = source_path.read_text(encoding="utf-8").splitlines()
+        total_lines = max(len(file_lines), 1)
+        if start_line is not None:
+            start_line = max(1, min(start_line, total_lines))
+        if end_line is not None:
+            end_line = max(start_line or 1, min(end_line, total_lines))
+
+        view_start = 1
+        view_end = total_lines
+        if start_line is not None and end_line is not None:
+            # Show a focused excerpt around the linked source range instead of dumping the full file.
+            view_start = max(1, start_line - 3)
+            view_end = min(total_lines, end_line + 3)
+
+        line_rows = []
+        for line_number in range(view_start, view_end + 1):
+            line_text = file_lines[line_number - 1] if line_number - 1 < len(file_lines) else ""
+            target_class = ""
+            if start_line is not None and end_line is not None and start_line <= line_number <= end_line:
+                target_class = " source-line-target"
+            line_rows.append(
+                f'<li class="source-line{target_class}"><span class="source-gutter">{line_number}</span><code>{html.escape(line_text)}</code></li>'
+            )
+
+        range_label = "-"
+        if start_line is not None:
+            range_label = f"lines {start_line}" if start_line == end_line else f"lines {start_line}-{end_line}"
+
+        content = f"""
+        <section class="panel">
+          <p class="eyebrow">Source View</p>
+          <h1>{html.escape(source_title)}</h1>
+          <dl class="stats">
+            <div><dt>File</dt><dd>{html.escape(str(source_path))}</dd></div>
+            <div><dt>Highlighted</dt><dd>{html.escape(range_label)}</dd></div>
+          </dl>
+          <div class="actions">
+            <a class="button button-secondary" href="{html.escape(back_href)}">Back</a>
+          </div>
+        </section>
+        <section class="panel">
+          <ol class="source-lines" start="{view_start}">
+            {''.join(line_rows)}
+          </ol>
+        </section>
+        """
+        return self.html_page(f"Source · {source_path.name}", content)
+
+    def _render_markdown(
+        self,
+        raw_text: str,
+        *,
+        card_id: int | None = None,
+        attempt_id: int | None = None,
+    ) -> str:
+        text = re.sub(r"<img[^>]*>", "", raw_text, flags=re.IGNORECASE).replace("\r\n", "\n").strip()
+        if not text:
+            return "<p></p>"
+
+        blocks: list[str] = []
+        paragraph_lines: list[str] = []
+        list_items: list[str] = []
+        list_kind: str | None = None
+        in_code_block = False
+        code_lines: list[str] = []
+
+        def flush_paragraph() -> None:
+            if not paragraph_lines:
+                return
+            paragraph = " ".join(line.strip() for line in paragraph_lines if line.strip())
+            blocks.append(
+                f"<p>{self._render_inline_markdown(paragraph, card_id=card_id, attempt_id=attempt_id)}</p>"
+            )
+            paragraph_lines.clear()
+
+        def flush_list() -> None:
+            nonlocal list_kind
+            if not list_items or list_kind is None:
+                return
+            items = "".join(f"<li>{item}</li>" for item in list_items)
+            blocks.append(f"<{list_kind}>{items}</{list_kind}>")
+            list_items.clear()
+            list_kind = None
+
+        for raw_line in text.split("\n"):
+            stripped = raw_line.rstrip()
+            if stripped.startswith("```"):
+                flush_paragraph()
+                flush_list()
+                if in_code_block:
+                    blocks.append(f"<pre class=\"code-block\"><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+                    code_lines.clear()
+                    in_code_block = False
+                else:
+                    in_code_block = True
+                continue
+
+            if in_code_block:
+                code_lines.append(raw_line)
+                continue
+
+            heading_match = re.match(r"^(#{1,6})\s+(.*)$", stripped)
+            unordered_match = re.match(r"^[-*]\s+(.*)$", stripped)
+            ordered_match = re.match(r"^\d+\.\s+(.*)$", stripped)
+
+            if not stripped:
+                flush_paragraph()
+                flush_list()
+                continue
+            if heading_match:
+                flush_paragraph()
+                flush_list()
+                level = len(heading_match.group(1))
+                heading_html = self._render_inline_markdown(
+                    heading_match.group(2).strip(),
+                    card_id=card_id,
+                    attempt_id=attempt_id,
+                )
+                blocks.append(f"<h{level}>{heading_html}</h{level}>")
+                continue
+            if unordered_match:
+                flush_paragraph()
+                if list_kind not in {None, "ul"}:
+                    flush_list()
+                list_kind = "ul"
+                list_items.append(
+                    self._render_inline_markdown(
+                        unordered_match.group(1).strip(),
+                        card_id=card_id,
+                        attempt_id=attempt_id,
+                    )
+                )
+                continue
+            if ordered_match:
+                flush_paragraph()
+                if list_kind not in {None, "ol"}:
+                    flush_list()
+                list_kind = "ol"
+                list_items.append(
+                    self._render_inline_markdown(
+                        ordered_match.group(1).strip(),
+                        card_id=card_id,
+                        attempt_id=attempt_id,
+                    )
+                )
+                continue
+            if list_kind is not None:
+                flush_list()
+            paragraph_lines.append(raw_line)
+
+        if in_code_block:
+            blocks.append(f"<pre class=\"code-block\"><code>{html.escape(chr(10).join(code_lines))}</code></pre>")
+        flush_paragraph()
+        flush_list()
+        return "".join(blocks)
+
+    def _render_inline_markdown(
+        self,
+        raw_text: str,
+        *,
+        card_id: int | None,
+        attempt_id: int | None,
+    ) -> str:
+        text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", "", raw_text)
+        parts = re.split(r"(`[^`]+`)", text)
+        rendered_parts: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith("`") and part.endswith("`") and len(part) >= 2:
+                rendered_parts.append(f"<code>{html.escape(part[1:-1])}</code>")
+                continue
+            rendered_parts.append(
+                self._render_inline_without_code(part, card_id=card_id, attempt_id=attempt_id)
+            )
+        return "".join(rendered_parts)
+
+    def _render_inline_without_code(
+        self,
+        raw_text: str,
+        *,
+        card_id: int | None,
+        attempt_id: int | None,
+    ) -> str:
+        pieces: list[str] = []
+        cursor = 0
+        for match in re.finditer(r"\[([^\]]+)\]\(([^)]+)\)", raw_text):
+            prefix = raw_text[cursor:match.start()]
+            if prefix:
+                pieces.append(self._apply_inline_emphasis(html.escape(prefix)))
+
+            label = self._apply_inline_emphasis(html.escape(match.group(1)))
+            href = self._rewrite_prompt_link(
+                match.group(2),
+                card_id=card_id,
+                attempt_id=attempt_id,
+            )
+            if href is None:
+                pieces.append(label)
+            else:
+                pieces.append(f'<a href="{html.escape(href)}">{label}</a>')
+            cursor = match.end()
+
+        suffix = raw_text[cursor:]
+        if suffix:
+            pieces.append(self._apply_inline_emphasis(html.escape(suffix)))
+        return "".join(pieces)
+
+    def _apply_inline_emphasis(self, escaped_text: str) -> str:
+        strong = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped_text)
+        strong = re.sub(r"__(.+?)__", r"<strong>\1</strong>", strong)
+        italic = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", strong)
+        return re.sub(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", r"<em>\1</em>", italic)
+
+    def _rewrite_prompt_link(
+        self,
+        target: str,
+        *,
+        card_id: int | None,
+        attempt_id: int | None,
+    ) -> str | None:
+        candidate = target.strip()
+        if candidate.startswith(("http://", "https://")):
+            return candidate
+
+        source_ref = self._parse_source_reference(candidate)
+        if source_ref is None:
+            return None
+
+        query = {"path": str(source_ref.path)}
+        if source_ref.start_line is not None:
+            query["start"] = str(source_ref.start_line)
+        if source_ref.end_line is not None:
+            query["end"] = str(source_ref.end_line)
+
+        if attempt_id is not None:
+            return f"/review/{attempt_id}/source?{urlencode(query)}"
+        if card_id is not None:
+            return f"/cards/{card_id}/source?{urlencode(query)}"
+        return None
+
+    def _parse_source_reference(self, raw_target: str) -> SourceReference | None:
+        candidate = raw_target.strip()
+        if candidate.startswith("cci:"):
+            file_index = candidate.find("file://")
+            if file_index == -1:
+                return None
+            candidate = candidate[file_index:]
+
+        if candidate.startswith("file://"):
+            candidate = unquote(candidate[len("file://"):])
+        elif not candidate.startswith("/"):
+            return None
+
+        range_match = re.match(r"^(?P<path>.+?):(?P<start>\d+):\d+(?:-(?P<end>\d+):\d+)?$", candidate)
+        if range_match:
+            return SourceReference(
+                path=Path(range_match.group("path")).expanduser().resolve(),
+                start_line=int(range_match.group("start")),
+                end_line=int(range_match.group("end")) if range_match.group("end") else int(range_match.group("start")),
+            )
+
+        return SourceReference(
+            path=Path(candidate).expanduser().resolve(),
+            start_line=None,
+            end_line=None,
+        )
+
+    def _resolve_bound_source_path(self, card: object, requested_path: Path) -> Path | None:
+        source_path = str(getattr(card, "source_path", "") or "").strip()
+        if source_path:
+            bound_source = Path(source_path).expanduser().resolve()
+            if requested_path == bound_source:
+                return requested_path
+
+        asset_path = str(getattr(card, "asset_path", "") or "").strip()
+        if asset_path:
+            asset_dir = Path(asset_path).expanduser().resolve()
+            if requested_path == asset_dir:
+                return requested_path
+            if requested_path.is_relative_to(asset_dir):
+                return requested_path
+
+        return None
+
+    def _optional_int(self, raw_value: str) -> int | None:
+        if not raw_value.strip():
+            return None
+        try:
+            return int(raw_value)
+        except ValueError:
+            return None
 
     def _parse_form(self, environ: dict) -> dict[str, list[str]]:
         length = int(environ.get("CONTENT_LENGTH") or "0")

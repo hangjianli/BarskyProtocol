@@ -93,6 +93,15 @@ The importer should:
 The generated prompt should describe the implementation task, not just repeat a
 chapter heading or file name.
 
+Source references embedded in imported prompts should stay useful in the UI.
+
+Rules:
+
+- preserve readable link labels from source markdown
+- do not surface raw editor-specific URIs directly to the user
+- rewrite supported local source references into in-app source-view routes
+- keep rendering scoped to files already bound to the imported card
+
 ## Metadata Suggestions
 
 Candidate metadata should be enriched with the LLM:
