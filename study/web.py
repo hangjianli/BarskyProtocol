@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
@@ -176,7 +177,7 @@ class StudyWebApp:
                 <a href="/cards/{int(card['id'])}">{html.escape(str(card['title']))}</a>
                 <small class="muted">· {html.escape(str(card['type']))} · {html.escape(str(card['topic'] or '-'))}</small>
               </span>
-              <strong>created {html.escape(str(card['created_at']))}</strong>
+              <strong>box {int(card['box'])} · created {html.escape(self._format_timestamp(str(card['created_at'])))}</strong>
             </li>
             """
             for card in cards
@@ -200,7 +201,7 @@ class StudyWebApp:
         review_rows = "".join(
             f"""
             <li>
-              <span>{html.escape(str(review['reviewed_at']))} · {html.escape(str(review['result']))}</span>
+              <span>{html.escape(self._format_timestamp(str(review['reviewed_at'])))} · {html.escape(str(review['result']))}</span>
               <strong>{html.escape(str(review['reason_summary']))}</strong>
             </li>
             """
@@ -240,7 +241,7 @@ class StudyWebApp:
             <div><dt>Topic</dt><dd>{html.escape(card.topic or '-')}</dd></div>
             <div><dt>Tags</dt><dd>{html.escape(tags)}</dd></div>
             <div><dt>Box</dt><dd>{card.box}</dd></div>
-            <div><dt>Next review</dt><dd>{html.escape(card.next_review_at)}</dd></div>
+            <div><dt>Next review</dt><dd>{html.escape(self._format_date(card.next_review_at))}</dd></div>
             <div><dt>Scheduler</dt><dd>{html.escape(card.scheduler_name)}</dd></div>
             <div><dt>Last result</dt><dd>{html.escape(card.last_result or '-')}</dd></div>
             <div><dt>Source label</dt><dd>{html.escape(card.source_label or card.source or '-')}</dd></div>
@@ -775,7 +776,7 @@ class StudyWebApp:
         <section class="panel">
           <p class="eyebrow">Concept Review</p>
           <h1>{html.escape(str(attempt['title']))}</h1>
-          <p class="meta">Topic: {html.escape(str(attempt['topic'] or '-'))} · Box: {attempt['box']} · Due: {html.escape(str(attempt['next_review_at']))}</p>
+          <p class="meta">Topic: {html.escape(str(attempt['topic'] or '-'))} · Box: {attempt['box']} · Due: {html.escape(self._format_date(str(attempt['next_review_at'])))}</p>
         </section>
         <section class="panel">
           <h2>Prompt</h2>
@@ -826,7 +827,7 @@ class StudyWebApp:
         <section class="panel">
           <p class="eyebrow">Exercise Review</p>
           <h1>{html.escape(attempt.title)}</h1>
-          <p class="meta">Topic: {html.escape(attempt.topic or '-')} · Box: {attempt.box} · Due: {html.escape(attempt.next_review_at)}</p>
+          <p class="meta">Topic: {html.escape(attempt.topic or '-')} · Box: {attempt.box} · Due: {html.escape(self._format_date(attempt.next_review_at))}</p>
         </section>
         <section class="panel">
           <h2>Prompt</h2>
@@ -933,7 +934,7 @@ class StudyWebApp:
             <div><dt>New box</dt><dd>{schedule.new_box}</dd></div>
             <div><dt>Previous interval</dt><dd>{schedule.previous_interval_days if schedule.previous_interval_days is not None else "new"}</dd></div>
             <div><dt>New interval</dt><dd>{schedule.new_interval_days} day(s)</dd></div>
-            <div><dt>Next review</dt><dd>{html.escape(schedule.next_review_at)}</dd></div>
+            <div><dt>Next review</dt><dd>{html.escape(self._format_date(schedule.next_review_at))}</dd></div>
           </dl>
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
@@ -1028,7 +1029,7 @@ class StudyWebApp:
             <div><dt>New box</dt><dd>{schedule.new_box}</dd></div>
             <div><dt>Previous interval</dt><dd>{schedule.previous_interval_days if schedule.previous_interval_days is not None else "new"}</dd></div>
             <div><dt>New interval</dt><dd>{schedule.new_interval_days} day(s)</dd></div>
-            <div><dt>Next review</dt><dd>{html.escape(schedule.next_review_at)}</dd></div>
+            <div><dt>Next review</dt><dd>{html.escape(self._format_date(schedule.next_review_at))}</dd></div>
           </dl>
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
@@ -1068,6 +1069,25 @@ class StudyWebApp:
 
     def redirect(self, location: str) -> Response:
         return Response(status="303 See Other", headers=[("Location", location)], body=b"")
+
+    def _format_timestamp(self, raw_timestamp: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(raw_timestamp)
+        except ValueError:
+            # Show the stored value if an older row is not ISO-formatted.
+            return raw_timestamp
+
+        # Convert to local wall-clock time so the list view is easier to scan quickly.
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M")
+
+    def _format_date(self, raw_timestamp: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(raw_timestamp)
+        except ValueError:
+            return raw_timestamp
+
+        # Due dates only need the calendar day in the study UI.
+        return parsed.astimezone().strftime("%Y-%m-%d")
 
     def _parse_form(self, environ: dict) -> dict[str, list[str]]:
         length = int(environ.get("CONTENT_LENGTH") or "0")

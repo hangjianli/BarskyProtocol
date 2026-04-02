@@ -174,6 +174,8 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("Concept Review", review_html)
         self.assertIn("Type your answer before grading", review_html)
+        self.assertRegex(review_html, r"Due: \d{4}-\d{2}-\d{2}")
+        self.assertNotIn("+00:00", review_html)
 
         with patch("study.web.grade_concept_answer") as mocked_grade:
             mocked_grade.return_value.result = "fail"
@@ -218,8 +220,7 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("/cards/1", cards_html)
         self.assertIn("Binary search", cards_html)
-        self.assertIn("created", cards_html)
-        self.assertNotIn("box 1", cards_html)
+        self.assertRegex(cards_html, r"box 1 · created \d{4}-\d{2}-\d{2} \d{2}:\d{2}")
 
         status, _, detail_html = call_app(self.app, method="GET", path=f"/cards/{card_id}")
         self.assertEqual(status, "200 OK")
