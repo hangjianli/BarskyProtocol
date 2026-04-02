@@ -68,6 +68,9 @@ Python imports should:
 In `aggressive` mode, each candidate should focus on one top-level function or
 class while carrying forward the support code it depends on.
 
+If adjacent functions or classes are independent, later candidates should not
+inherit earlier implementations just because they appeared first in the file.
+
 In `balanced` mode, related top-level definitions may stay together as one
 candidate when the module is small or tightly coupled.
 
@@ -83,6 +86,7 @@ The importer should:
 - generate task-focused prompts from the extracted code intent
 - separate runtime support context from visible study prompt context
 - preserve dependencies so generated exercises remain standalone
+- include only the support code the candidate actually depends on
 
 The generated prompt should describe the implementation task, not just repeat a
 chapter heading or file name.

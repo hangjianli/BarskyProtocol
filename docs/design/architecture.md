@@ -7,6 +7,7 @@ cli.py
 study/
   app.py
   analytics.py
+  card_contract.py
   config.py
   grading.py
   notebooks.py
@@ -25,6 +26,7 @@ cards/
 - `cli.py`: setup and admin entrypoint
 - `study/app.py`: CLI wiring
 - `study/web.py`: server-rendered routes and handlers
+- `study/card_contract.py`: TOML card contract parsing and text-import validation
 - `study/storage.py`: schema, queries, and mutations
 - `study/notebooks.py`: source import parsing and draft generation
 - `study/grading.py`: LLM-based grading and reusable model-call helpers
@@ -40,6 +42,7 @@ cards/
 - `/cards/new/concept`
 - `/cards/new/exercise`
 - `/cards/import-notebook`
+- `/cards/import-text`
 - `/patterns`
 - `/recommendations`
 
@@ -52,6 +55,7 @@ flowchart TD
     C --> F["/cards/new/concept"]
     C --> G["/cards/new/exercise"]
     C --> H["/cards/import-notebook"]
+    C --> J["/cards/import-text"]
     B --> I["/review/:attempt_id"]
 ```
 

@@ -301,6 +301,79 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertTrue(Path(detail.asset_path).is_dir())
         self.assertTrue((Path(detail.asset_path) / "tests.py").is_file())
 
+    def test_import_text_contract_creates_concept_and_exercise_cards(self) -> None:
+        contract = (
+            'version = 1\n'
+            '\n'
+            '[[cards]]\n'
+            'type = "concept"\n'
+            'title = "Mutex"\n'
+            'topic = "python"\n'
+            'tags = ["threading", "concurrency"]\n'
+            'prompt = """\n'
+            'What does a mutex do?\n'
+            '"""\n'
+            'answer = """\n'
+            'It serializes access to shared state.\n'
+            '"""\n'
+            '\n'
+            '[[cards]]\n'
+            'type = "code_exercise"\n'
+            'title = "Adder"\n'
+            'topic = "python"\n'
+            'tags = "exercise, math"\n'
+            'prompt = """\n'
+            'Implement add(a, b).\n'
+            '"""\n'
+            'answer_py = """\n'
+            'def add(a: int, b: int) -> int:\n'
+            '    raise NotImplementedError\n'
+            '"""\n'
+            'solution_py = """\n'
+            'def add(a: int, b: int) -> int:\n'
+            '    return a + b\n'
+            '"""\n'
+            'tests_py = """\n'
+            'import unittest\n'
+            'import answer\n'
+            '\n'
+            'class ExerciseTests(unittest.TestCase):\n'
+            '    def test_add(self) -> None:\n'
+            '        self.assertEqual(answer.add(2, 3), 5)\n'
+            '\n'
+            'if __name__ == "__main__":\n'
+            '    unittest.main()\n'
+            '"""\n'
+        )
+
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-text",
+            body="contract_text=" + quote_plus(contract),
+        )
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(headers["Location"], "/cards/1")
+
+        concept = get_card_detail(self.config, 1)
+        exercise = get_card_detail(self.config, 2)
+        self.assertEqual(concept.type, "concept")
+        self.assertEqual(concept.tags, ["threading", "concurrency"])
+        self.assertEqual(exercise.type, "code_exercise")
+        self.assertEqual(exercise.tags, ["exercise", "math"])
+        self.assertTrue((Path(exercise.asset_path) / "solution.py").is_file())
+
+    def test_import_text_contract_shows_validation_errors(self) -> None:
+        status, _, body = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-text",
+            body="contract_text=" + quote_plus('version = 1\n\n[[cards]]\ntype = "concept"\ntitle = "Broken"\n'),
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Cannot import this contract yet", body)
+        self.assertIn("requires a non-empty `prompt` field", body)
+
     def test_exercise_review_creates_workspace_and_records_validation(self) -> None:
         files = scaffold_exercise_assets(
             self.config,
@@ -579,6 +652,48 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Supporting context preserved", second_answer)
         self.assertIn("def split_words", second_answer)
 
+    def test_aggressive_notebook_split_does_not_carry_independent_previous_code(self) -> None:
+        notebook_path = self.root / "independent.ipynb"
+        notebook_path.write_text(
+            json.dumps(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Utilities\n", "Independent helpers.\n"]},
+                        {"cell_type": "code", "source": ["def normalize(text: str) -> str:\n", "    return text.strip().lower()\n"]},
+                        {"cell_type": "code", "source": ["def count_words(text: str) -> int:\n", "    return len(text.split())\n"]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(notebook_path))}&topic=nlp&source_label=independent.ipynb&split_mode=aggressive",
+        )
+        self.assertEqual(status, "200 OK")
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', review_html)
+        self.assertIsNotNone(draft_id)
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/create",
+            body=(
+                f"draft_id={draft_id.group(1)}"
+                "&keep_0=yes&title_0=Normalize&topic_0=nlp&tags_0=python"
+                "&keep_1=yes&title_1=Count+Words&topic_1=nlp&tags_1=python"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+
+        second = get_card_detail(self.config, 2)
+        second_solution = (Path(second.asset_path) / "solution.py").read_text(encoding="utf-8")
+        self.assertIn("def count_words", second_solution)
+        self.assertNotIn("def normalize", second_solution)
+
     def test_import_python_from_external_path_creates_standalone_candidates(self) -> None:
         source_path = self.root / "tokenizer.py"
         source_path.write_text(
@@ -631,6 +746,49 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("import re", second_solution)
         self.assertIn("def split_words", second_solution)
         self.assertIn("def encode_text", second_solution)
+
+    def test_import_python_does_not_carry_independent_previous_functions(self) -> None:
+        source_path = self.root / "independent.py"
+        source_path.write_text(
+            "\n".join(
+                [
+                    "def normalize(text: str) -> str:",
+                    "    return text.strip().lower()",
+                    "",
+                    "def count_words(text: str) -> int:",
+                    "    return len(text.split())",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        status, _, review_html = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/preview",
+            body=f"source_path={quote_plus(str(source_path))}&topic=nlp&source_label=independent.py&split_mode=aggressive",
+        )
+        self.assertEqual(status, "200 OK")
+
+        draft_id = re.search(r'name="draft_id" value="([^"]+)"', review_html)
+        self.assertIsNotNone(draft_id)
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path="/cards/import-notebook/create",
+            body=(
+                f"draft_id={draft_id.group(1)}"
+                "&keep_0=yes&title_0=Normalize&topic_0=nlp&tags_0=python"
+                "&keep_1=yes&title_1=Count+Words&topic_1=nlp&tags_1=python"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+
+        second = get_card_detail(self.config, 2)
+        second_solution = (Path(second.asset_path) / "solution.py").read_text(encoding="utf-8")
+        self.assertIn("def count_words", second_solution)
+        self.assertNotIn("def normalize", second_solution)
 
 
 if __name__ == "__main__":

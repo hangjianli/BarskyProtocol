@@ -21,10 +21,11 @@ learning and coding practice.
 1. [Overview](./docs/design/overview.md)
 2. [Review Flows](./docs/design/workflows.md)
 3. [Source Import](./docs/design/notebook-import.md)
-4. [Data Model and Storage](./docs/design/data-model.md)
-5. [Scheduling](./docs/design/scheduling.md)
-6. [Analytics and Recommendations](./docs/design/analytics.md)
-7. [Architecture and Roadmap](./docs/design/architecture.md)
+4. [Card Contract](./docs/design/card-contract.md)
+5. [Data Model and Storage](./docs/design/data-model.md)
+6. [Scheduling](./docs/design/scheduling.md)
+7. [Analytics and Recommendations](./docs/design/analytics.md)
+8. [Architecture and Roadmap](./docs/design/architecture.md)
 
 ## Quick Map
 
@@ -34,6 +35,8 @@ learning and coding practice.
   [workflows.md](./docs/design/workflows.md)
 - Source import, split modes, regeneration, and metadata enrichment:
   [notebook-import.md](./docs/design/notebook-import.md)
+- LLM-friendly text card schema for concept and exercise capture:
+  [card-contract.md](./docs/design/card-contract.md)
 - SQLite schema, provenance, and filesystem layout:
   [data-model.md](./docs/design/data-model.md)
 - Leitner fallback, adaptive scheduler direction, and transparency rules:

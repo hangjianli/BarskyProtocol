@@ -40,6 +40,14 @@ class NotebookImportDraft:
     candidates: list[NotebookCandidate]
 
 
+@dataclass(frozen=True)
+class SupportBlock:
+    code: str
+    indexes: list[int]
+    provided_names: set[str]
+    referenced_names: set[str]
+
+
 def build_import_draft(
     config: StudyConfig,
     *,
@@ -344,10 +352,8 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
     candidates: list[NotebookCandidate] = []
     current_title = ""
     current_notes: list[str] = []
-    setup_code: list[str] = []
-    setup_indexes: list[int] = []
-    prior_code: list[str] = []
-    prior_indexes: list[int] = []
+    setup_blocks: list[SupportBlock] = []
+    prior_blocks: list[SupportBlock] = []
 
     for index, cell in enumerate(cells, start=1):
         cell_type = str(cell.get("cell_type", ""))
@@ -360,13 +366,10 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
             if heading:
                 current_title = heading
                 current_notes = [body] if body else []
-                setup_code = []
-                setup_indexes = [index]
-                prior_code = []
-                prior_indexes = []
+                setup_blocks = []
+                prior_blocks = []
             else:
                 current_notes.append(raw_source)
-                setup_indexes.append(index)
             continue
 
         if cell_type != "code":
@@ -375,12 +378,12 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
         # In aggressive mode, pure import cells are treated as context instead of
         # becoming one-line exercises on their own.
         if _is_setup_only_code(raw_source):
-            setup_code.append(raw_source)
-            setup_indexes.append(index)
+            setup_blocks.append(_build_support_block(raw_source, indexes=[index]))
             continue
 
-        support_code = setup_code + prior_code
-        support_indexes = setup_indexes + prior_indexes
+        support_blocks = _resolve_support_blocks(raw_source, [*setup_blocks, *prior_blocks])
+        support_code = [block.code for block in support_blocks]
+        support_indexes = [value for block in support_blocks for value in block.indexes]
         cell_indexes = support_indexes + [index]
         notes = list(current_notes)
         title = _infer_code_title(raw_source, len(candidates) + 1)
@@ -407,10 +410,7 @@ def _parse_aggressive_candidates(cells: list[dict], *, default_topic: str = "") 
                 cell_indexes=cell_indexes,
             )
         )
-        prior_code = support_code + [raw_source]
-        prior_indexes = cell_indexes
-        setup_code = []
-        setup_indexes = []
+        prior_blocks.append(_build_support_block(raw_source, indexes=[index]))
 
     return candidates
 
@@ -454,7 +454,7 @@ def _parse_aggressive_python_candidates(
     module_notes: list[str],
 ) -> list[NotebookCandidate]:
     candidates: list[NotebookCandidate] = []
-    support_code: list[str] = []
+    prior_blocks: list[SupportBlock] = []
 
     for node in body:
         node_source = _node_source(source_text, node).strip()
@@ -462,6 +462,8 @@ def _parse_aggressive_python_candidates(
             continue
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            support_blocks = _resolve_support_blocks(node_source, prior_blocks)
+            support_code = [block.code for block in support_blocks]
             title = _infer_python_title(node_source, source_label, fallback_index=len(candidates) + 1)
             line_spec = _format_line_spec(node.lineno, getattr(node, "end_lineno", node.lineno))
             names = _infer_top_level_names(node_source)
@@ -486,8 +488,12 @@ def _parse_aggressive_python_candidates(
                 )
             )
 
-        # Carry every earlier top-level block forward so later candidates stay standalone.
-        support_code.append(node_source)
+        prior_blocks.append(
+            _build_support_block(
+                node_source,
+                indexes=[getattr(node, "lineno", 1)],
+            )
+        )
 
     if candidates:
         return candidates
@@ -583,6 +589,90 @@ def _infer_top_level_names(code: str) -> list[str]:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names.append(node.name)
     return names
+
+
+def _build_support_block(code: str, *, indexes: list[int]) -> SupportBlock:
+    return SupportBlock(
+        code=code,
+        indexes=indexes,
+        provided_names=_provided_names(code),
+        referenced_names=_referenced_names(code),
+    )
+
+
+def _resolve_support_blocks(current_code: str, prior_blocks: list[SupportBlock]) -> list[SupportBlock]:
+    if not prior_blocks:
+        return []
+
+    required_names = set(_referenced_names(current_code))
+    selected_indexes: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for index, block in enumerate(prior_blocks):
+            if index in selected_indexes:
+                continue
+            if not block.provided_names.intersection(required_names):
+                continue
+            selected_indexes.add(index)
+            required_names.update(block.referenced_names)
+            changed = True
+
+    return [block for index, block in enumerate(prior_blocks) if index in selected_indexes]
+
+
+def _provided_names(code: str) -> set[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+
+    provided: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            provided.add(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                provided.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    provided.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                provided.update(_extract_assigned_names(target))
+        elif isinstance(node, ast.AnnAssign):
+            provided.update(_extract_assigned_names(node.target))
+    return provided
+
+
+def _extract_assigned_names(target: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(target):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+    return names
+
+
+def _referenced_names(code: str) -> set[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+
+    loaded: set[str] = set()
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load):
+                loaded.add(node.id)
+            elif isinstance(node.ctx, ast.Store):
+                bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+    return loaded - bound
 
 
 def _is_setup_only_code(code: str) -> bool:
