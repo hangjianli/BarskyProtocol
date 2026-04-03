@@ -38,6 +38,7 @@ from study.storage import (
     list_cards,
     recent_reviews_for_card,
     start_review_attempt,
+    update_card,
     update_attempt_workspace,
 )
 from study.validators import run_exercise_tests
@@ -74,6 +75,10 @@ class StudyWebApp:
             response = self.handle_cards()
         elif method == "GET" and re.fullmatch(r"/cards/\d+/source", path):
             response = self.handle_card_source_view(int(path.split("/")[-2]), query)
+        elif method == "GET" and re.fullmatch(r"/cards/\d+/edit", path):
+            response = self.handle_card_edit_form(int(path.split("/")[-2]))
+        elif method == "POST" and re.fullmatch(r"/cards/\d+/edit", path):
+            response = self.handle_card_edit_submit(int(path.split("/")[-2]), environ)
         elif method == "GET" and re.fullmatch(r"/cards/\d+", path):
             response = self.handle_card_detail(int(path.rsplit("/", 1)[-1]))
         elif method == "POST" and re.fullmatch(r"/cards/\d+/delete", path):
@@ -90,6 +95,8 @@ class StudyWebApp:
             response = self.handle_import_text_form()
         elif method == "POST" and path == "/cards/import-text":
             response = self.handle_import_text_submit(environ)
+        elif method == "GET" and path == "/cards/import-text/result":
+            response = self.handle_import_text_result(query)
         elif method == "GET" and path == "/cards/import-notebook":
             response = self.handle_import_notebook_form()
         elif method == "POST" and path == "/cards/import-notebook/preview":
@@ -237,11 +244,17 @@ class StudyWebApp:
             </section>
             """
         elif card.type == "code_exercise":
+            exercise_prompt = self._exercise_prompt_text(card)
             prompt_block = f"""
+            <section class="panel">
+              <h2>Prompt</h2>
+              <div class="markdown-content">{self._render_markdown(exercise_prompt, card_id=card.id)}</div>
+            </section>
             <section class="panel">
               <h2>Exercise Files</h2>
               <dl class="stats">
                 <div><dt>Asset path</dt><dd>{html.escape(card.asset_path)}</dd></div>
+                <div><dt>Prompt file</dt><dd>{html.escape(card.prompt_path or '-')}</dd></div>
                 <div><dt>Entry point</dt><dd>{html.escape(card.entrypoint or '-')}</dd></div>
                 <div><dt>Tests</dt><dd>{html.escape(card.tests_path or '-')}</dd></div>
               </dl>
@@ -271,7 +284,10 @@ class StudyWebApp:
         {prompt_block}
         <section class="panel">
           <h2>Card Actions</h2>
-          <p class="muted">Delete this card if it should no longer be part of the study set.</p>
+          <p class="muted">Edit this card or delete it if it should no longer be part of the study set.</p>
+          <div class="actions">
+            <a class="button button-secondary" href="/cards/{card.id}/edit">Edit Card</a>
+          </div>
           <form method="post" action="/cards/{card.id}/delete" class="actions">
             <button class="button button-danger" type="submit" onclick="return confirm('Delete this card and its review history?');">Delete Card</button>
           </form>
@@ -287,6 +303,107 @@ class StudyWebApp:
         if not delete_card(self.config, card_id):
             return self.text("404 Not Found", status="404 Not Found")
         return self.redirect("/cards")
+
+    def handle_card_edit_form(
+        self,
+        card_id: int,
+        *,
+        errors: list[str] | None = None,
+        values: dict[str, str] | None = None,
+    ) -> Response:
+        card = get_card_detail(self.config, card_id)
+        if card is None:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        values = values or self._card_form_values(card)
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = f'<section class="panel panel-error"><h2>Fix these fields</h2><ul class="errors">{error_items}</ul></section>'
+
+        if card.type == "concept":
+            content = f"""
+            {error_html}
+            <section class="panel">
+              <h1>Edit Concept Card</h1>
+              <form method="post" action="/cards/{card.id}/edit" class="form-stack">
+                {self._input("title", "Title", values.get("title", ""))}
+                {self._input("topic", "Topic", values.get("topic", ""))}
+                {self._input("tags", "Tags", values.get("tags", ""))}
+                {self._input("source", "Source", values.get("source", ""))}
+                {self._textarea("prompt", "Prompt", values.get("prompt", ""), rows=10)}
+                {self._textarea("answer", "Answer", values.get("answer", ""), rows=8)}
+                <div class="actions">
+                  <button class="button" type="submit">Save Changes</button>
+                  <a class="button button-secondary" href="/cards/{card.id}">Cancel</a>
+                </div>
+              </form>
+            </section>
+            """
+            return self.html_page(f"Edit · {card.title}", content)
+
+        content = f"""
+        {error_html}
+        <section class="panel">
+          <h1>Edit Exercise Card</h1>
+          <form method="post" action="/cards/{card.id}/edit" class="form-stack">
+            {self._input("title", "Title", values.get("title", ""))}
+            {self._input("topic", "Topic", values.get("topic", ""))}
+            {self._input("tags", "Tags", values.get("tags", ""))}
+            {self._input("source", "Source", values.get("source", ""))}
+            {self._textarea("prompt", "Prompt", values.get("prompt", ""), rows=12)}
+            {self._textarea("answer_py", "answer.py", values.get("answer_py", ""), rows=12)}
+            {self._textarea("solution_py", "solution.py", values.get("solution_py", ""), rows=12)}
+            {self._textarea("tests_py", "tests.py", values.get("tests_py", ""), rows=14)}
+            <div class="actions">
+              <button class="button" type="submit">Save Changes</button>
+              <a class="button button-secondary" href="/cards/{card.id}">Cancel</a>
+            </div>
+          </form>
+        </section>
+        """
+        return self.html_page(f"Edit · {card.title}", content)
+
+    def handle_card_edit_submit(self, card_id: int, environ: dict) -> Response:
+        card = get_card_detail(self.config, card_id)
+        if card is None:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        form = self._parse_form(environ)
+        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "source", "prompt", "answer")}
+        if card.type == "code_exercise":
+            values["answer_py"] = self._first(form, "answer_py")
+            values["solution_py"] = self._first(form, "solution_py")
+            values["tests_py"] = self._first(form, "tests_py")
+
+        errors: list[str] = []
+        if not values["title"].strip():
+            errors.append("Title is required.")
+        if not values["prompt"].strip():
+            errors.append("Prompt is required.")
+        if card.type == "concept" and not values["answer"].strip():
+            errors.append("Answer is required.")
+        if card.type == "code_exercise":
+            for field_name in ("answer_py", "solution_py", "tests_py"):
+                if not values[field_name].strip():
+                    errors.append(f"{field_name} is required.")
+        if errors:
+            return self.handle_card_edit_form(card_id, errors=errors, values=values)
+
+        update_card(
+            self.config,
+            card_id=card_id,
+            title=values["title"],
+            topic=values["topic"],
+            tags=[tag.strip() for tag in values["tags"].split(",") if tag.strip()],
+            source=values["source"],
+            prompt=values["prompt"],
+            answer=values.get("answer"),
+            answer_body=values.get("answer_py"),
+            solution_body=values.get("solution_py"),
+            tests_body=values.get("tests_py"),
+        )
+        return self.redirect(f"/cards/{card_id}")
 
     def handle_card_source_view(self, card_id: int, query: dict[str, list[str]]) -> Response:
         card = get_card_detail(self.config, card_id)
@@ -512,7 +629,52 @@ class StudyWebApp:
                 errors=["The contract did not create any cards."],
                 values={"contract_text": contract_text},
             )
-        return self.redirect(f"/cards/{created_ids[0]}")
+        query = urlencode([("ids", str(card_id)) for card_id in created_ids])
+        return self.redirect(f"/cards/import-text/result?{query}")
+
+    def handle_import_text_result(self, query: dict[str, list[str]]) -> Response:
+        raw_ids = query.get("ids", [])
+        if not raw_ids:
+            return self.redirect("/cards")
+
+        created_cards = []
+        for raw_id in raw_ids:
+            try:
+                card_id = int(raw_id)
+            except ValueError:
+                continue
+            card = get_card_detail(self.config, card_id)
+            if card is not None:
+                created_cards.append(card)
+
+        if not created_cards:
+            return self.redirect("/cards")
+
+        rows = "".join(
+            f"""
+            <li>
+              <span>
+                <a href="/cards/{card.id}">{html.escape(card.title)}</a>
+                <small class="muted">· {html.escape(card.type)} · {html.escape(card.topic or '-')}</small>
+              </span>
+              <strong>box {card.box} · created {html.escape(self._format_timestamp(card.created_at))}</strong>
+            </li>
+            """
+            for card in created_cards
+        )
+
+        content = f"""
+        <section class="panel">
+          <h1>Imported Cards</h1>
+          <p class="muted">Created {len(created_cards)} card(s) from the pasted contract.</p>
+          <ul class="list">{rows}</ul>
+          <div class="actions">
+            <a class="button" href="/cards">View All Cards</a>
+            <a class="button button-secondary" href="/cards/import-text">Import Another Contract</a>
+          </div>
+        </section>
+        """
+        return self.html_page("Imported Cards", content)
 
     def handle_new_concept_submit(self, environ: dict) -> Response:
         form = self._parse_form(environ)
@@ -1297,6 +1459,43 @@ class StudyWebApp:
         </section>
         """
         return self.html_page(f"Source · {source_path.name}", content)
+
+    def _card_form_values(self, card: object) -> dict[str, str]:
+        values = {
+            "title": str(getattr(card, "title", "")),
+            "topic": str(getattr(card, "topic", "")),
+            "tags": ", ".join(getattr(card, "tags", []) or []),
+            "source": str(getattr(card, "source", "")),
+            "prompt": str(getattr(card, "prompt", "") or ""),
+            "answer": str(getattr(card, "answer", "") or ""),
+        }
+        if str(getattr(card, "type", "")) == "code_exercise":
+            values["prompt"] = self._exercise_prompt_text(card)
+            values["answer_py"] = self._read_text_file(getattr(card, "answer_path", None))
+            values["solution_py"] = self._read_text_file(getattr(card, "solution_path", None))
+            values["tests_py"] = self._read_text_file(getattr(card, "tests_path", None))
+        return values
+
+    def _exercise_prompt_text(self, card: object) -> str:
+        return self._read_prompt_file(getattr(card, "prompt_path", None), fallback=str(getattr(card, "title", "")))
+
+    def _read_prompt_file(self, raw_path: str | None, *, fallback: str) -> str:
+        content = self._read_text_file(raw_path)
+        if not content:
+            return fallback
+
+        lines = content.splitlines()
+        if lines and lines[0].startswith("# "):
+            return "\n".join(lines[2:]).strip() or fallback
+        return content
+
+    def _read_text_file(self, raw_path: str | None) -> str:
+        if not raw_path:
+            return ""
+        path = Path(str(raw_path))
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8")
 
     def _render_markdown(
         self,

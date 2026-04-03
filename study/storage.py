@@ -147,6 +147,9 @@ class CardDetail:
     prompt: str | None
     answer: str | None
     asset_path: str
+    prompt_path: str | None
+    answer_path: str | None
+    solution_path: str | None
     entrypoint: str | None
     tests_path: str | None
 
@@ -503,6 +506,9 @@ def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
             SELECT cards.*,
                    concept_cards.prompt,
                    concept_cards.answer,
+                   exercise_cards.prompt_path,
+                   exercise_cards.answer_path,
+                   exercise_cards.solution_path,
                    exercise_cards.entrypoint,
                    exercise_cards.tests_path
             FROM cards
@@ -540,9 +546,81 @@ def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
         prompt=str(row["prompt"]) if row["prompt"] is not None else None,
         answer=str(row["answer"]) if row["answer"] is not None else None,
         asset_path=str(row["asset_path"]),
+        prompt_path=str(row["prompt_path"]) if row["prompt_path"] is not None else None,
+        answer_path=str(row["answer_path"]) if row["answer_path"] is not None else None,
+        solution_path=str(row["solution_path"]) if row["solution_path"] is not None else None,
         entrypoint=str(row["entrypoint"]) if row["entrypoint"] is not None else None,
         tests_path=str(row["tests_path"]) if row["tests_path"] is not None else None,
     )
+
+
+def update_card(
+    config: StudyConfig,
+    *,
+    card_id: int,
+    title: str,
+    topic: str,
+    tags: Iterable[str],
+    source: str,
+    prompt: str,
+    answer: str | None = None,
+    answer_body: str | None = None,
+    solution_body: str | None = None,
+    tests_body: str | None = None,
+) -> bool:
+    with managed_connection(config) as connection:
+        card = connection.execute(
+            """
+            SELECT cards.type,
+                   exercise_cards.prompt_path,
+                   exercise_cards.answer_path,
+                   exercise_cards.solution_path,
+                   exercise_cards.tests_path
+            FROM cards
+            LEFT JOIN exercise_cards ON exercise_cards.card_id = cards.id
+            WHERE cards.id = ?
+            """,
+            (card_id,),
+        ).fetchone()
+        if card is None:
+            return False
+
+        now = to_iso(utc_now())
+        connection.execute(
+            """
+            UPDATE cards
+            SET title = ?, topic = ?, tags = ?, source = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                title.strip(),
+                topic.strip(),
+                _json_tags(tags),
+                source.strip(),
+                now,
+                card_id,
+            ),
+        )
+
+        if str(card["type"]) == "concept":
+            connection.execute(
+                "UPDATE concept_cards SET prompt = ?, answer = ? WHERE card_id = ?",
+                (prompt.strip(), (answer or "").strip(), card_id),
+            )
+            return True
+
+        prompt_path = Path(str(card["prompt_path"]))
+        answer_path = Path(str(card["answer_path"]))
+        solution_path = Path(str(card["solution_path"]))
+        tests_path = Path(str(card["tests_path"]))
+
+    # Write exercise assets after the DB transaction so file writes stay simple
+    # and the edit handler can surface plain filesystem failures.
+    prompt_path.write_text(f"# {title.strip()}\n\n{prompt.strip()}\n", encoding="utf-8")
+    answer_path.write_text((answer_body or "").strip() + "\n", encoding="utf-8")
+    solution_path.write_text((solution_body or "").strip() + "\n", encoding="utf-8")
+    tests_path.write_text((tests_body or "").strip() + "\n", encoding="utf-8")
+    return True
 
 
 def recent_reviews_for_card(config: StudyConfig, card_id: int, *, limit: int = 10) -> list[sqlite3.Row]:

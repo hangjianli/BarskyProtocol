@@ -42,12 +42,14 @@ cards/
 - `/review/:attempt_id`
 - `/cards`
 - `/cards/:card_id`
+- `/cards/:card_id/edit`
 - `/cards/:card_id/delete`
 - `/cards/:card_id/source`
 - `/cards/new/concept`
 - `/cards/new/exercise`
 - `/cards/import-notebook`
 - `/cards/import-text`
+- `/cards/import-text/result`
 - `/patterns`
 - `/recommendations`
 - `/review/:attempt_id/source`
@@ -63,10 +65,12 @@ flowchart TD
     C --> H["/cards/import-notebook"]
     C --> J["/cards/import-text"]
     C --> K["/cards/:card_id"]
-    K --> L["/cards/:card_id/delete"]
-    K --> M["/cards/:card_id/source"]
+    J --> L["/cards/import-text/result"]
+    K --> M["/cards/:card_id/edit"]
+    K --> N["/cards/:card_id/delete"]
+    K --> O["/cards/:card_id/source"]
     B --> I["/review/:attempt_id"]
-    I --> N["/review/:attempt_id/source"]
+    I --> P["/review/:attempt_id/source"]
 ```
 
 ## Constraints
