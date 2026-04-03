@@ -731,7 +731,16 @@ class StudyWorkflowTests(unittest.TestCase):
             body="contract_text=" + quote_plus(contract),
         )
         self.assertEqual(status, "303 See Other")
-        self.assertEqual(headers["Location"], "/cards/1")
+        result_path, result_query = split_location(headers["Location"])
+        self.assertEqual(result_path, "/cards/import-text/result")
+        self.assertIn("ids=1", result_query)
+        self.assertIn("ids=2", result_query)
+
+        status, _, result_html = call_app(self.app, method="GET", path=result_path, query_string=result_query)
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Imported Cards", result_html)
+        self.assertIn("Mutex", result_html)
+        self.assertIn("Adder", result_html)
 
         concept = get_card_detail(self.config, 1)
         exercise = get_card_detail(self.config, 2)
@@ -740,6 +749,95 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(exercise.type, "code_exercise")
         self.assertEqual(exercise.tags, ["exercise", "math"])
         self.assertTrue((Path(exercise.asset_path) / "solution.py").is_file())
+
+    def test_edit_concept_card_updates_content(self) -> None:
+        card_id = add_concept_card(
+            self.config,
+            title="Mutex",
+            prompt="What does a mutex do?",
+            answer="It serializes access to shared state.",
+            topic="python",
+            tags=["threading"],
+            source="book",
+        )
+
+        status, _, edit_html = call_app(self.app, method="GET", path=f"/cards/{card_id}/edit")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Edit Concept Card", edit_html)
+
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path=f"/cards/{card_id}/edit",
+            body=(
+                "title=Mutex+Updated&topic=concurrency&tags=threading%2Clocks&source=notes"
+                "&prompt=Explain+the+purpose+of+a+mutex.&answer=It+prevents+simultaneous+access+to+shared+state."
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(headers["Location"], f"/cards/{card_id}")
+
+        detail = get_card_detail(self.config, card_id)
+        self.assertEqual(detail.title, "Mutex Updated")
+        self.assertEqual(detail.topic, "concurrency")
+        self.assertEqual(detail.tags, ["threading", "locks"])
+        self.assertEqual(detail.source, "notes")
+        self.assertEqual(detail.prompt, "Explain the purpose of a mutex.")
+        self.assertEqual(detail.answer, "It prevents simultaneous access to shared state.")
+
+    def test_edit_exercise_card_updates_prompt_and_files(self) -> None:
+        files = scaffold_exercise_assets(
+            self.config,
+            title="Adder",
+            topic="python",
+            prompt="Implement add(a, b).",
+        )
+        card_id = add_exercise_card(
+            self.config,
+            title="Adder",
+            topic="python",
+            tags=["exercise"],
+            source="import",
+            files=files,
+        )
+
+        status, _, edit_html = call_app(self.app, method="GET", path=f"/cards/{card_id}/edit")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Edit Exercise Card", edit_html)
+        self.assertIn("answer.py", edit_html)
+
+        updated_answer = "def add(a: int, b: int) -> int:\\n    return a + b\\n"
+        updated_solution = "def add(a: int, b: int) -> int:\\n    return a + b\\n"
+        updated_tests = (
+            "import unittest\\nimport answer\\n\\n"
+            "class ExerciseTests(unittest.TestCase):\\n"
+            "    def test_add(self) -> None:\\n"
+            "        self.assertEqual(answer.add(2, 3), 5)\\n"
+        )
+        status, headers, _ = call_app(
+            self.app,
+            method="POST",
+            path=f"/cards/{card_id}/edit",
+            body=(
+                "title=Adder+Updated&topic=algorithms&tags=exercise%2Cmath&source=imported"
+                "&prompt=Implement+add+and+return+the+sum."
+                f"&answer_py={quote_plus(updated_answer)}"
+                f"&solution_py={quote_plus(updated_solution)}"
+                f"&tests_py={quote_plus(updated_tests)}"
+            ),
+        )
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(headers["Location"], f"/cards/{card_id}")
+
+        detail = get_card_detail(self.config, card_id)
+        self.assertEqual(detail.title, "Adder Updated")
+        self.assertEqual(detail.topic, "algorithms")
+        self.assertEqual(detail.tags, ["exercise", "math"])
+        self.assertEqual(detail.source, "imported")
+        self.assertIn("Implement add and return the sum.", Path(detail.prompt_path).read_text(encoding="utf-8"))
+        self.assertIn("return a + b", Path(detail.answer_path).read_text(encoding="utf-8"))
+        self.assertIn("return a + b", Path(detail.solution_path).read_text(encoding="utf-8"))
+        self.assertIn("self.assertEqual(answer.add(2, 3), 5)", Path(detail.tests_path).read_text(encoding="utf-8"))
 
     def test_import_text_contract_shows_validation_errors(self) -> None:
         status, _, body = call_app(
