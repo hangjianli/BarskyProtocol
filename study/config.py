@@ -26,6 +26,8 @@ class StudyConfig:
     review_order: str
     llm_validator: str
     llm_model: str
+    llm_base_url: str
+    llm_api: str
     llm_auth_file: Path
 
 
@@ -86,6 +88,8 @@ def load_config(start: Path | None = None) -> StudyConfig:
         exercise_scheduler=study.get("exercise_scheduler", "leitner_fallback"),
         review_order=study.get("review_order", "oldest-first"),
         llm_validator=study.get("llm_validator", "codex_oauth"),
-        llm_model=study.get("llm_model", "gpt-4.1-mini"),
+        llm_model=study.get("llm_model", "gpt-5-codex"),
+        llm_base_url=study.get("llm_base_url", ""),
+        llm_api=study.get("llm_api", ""),
         llm_auth_file=_resolve_path(base_dir, study.get("llm_auth_file", "~/.codex/auth.json")),
     )

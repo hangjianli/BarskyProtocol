@@ -7,12 +7,14 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from urllib import error
 from urllib.parse import quote_plus, urlencode, urlsplit
 from unittest.mock import patch
 from wsgiref.util import setup_testing_defaults
 
 from study.config import load_config
 from study.exercises import scaffold_exercise_assets
+from study.grading import grade_concept_answer
 from study.notebooks import load_import_draft
 from study.scheduler import fallback_schedule
 from study.storage import (
@@ -83,7 +85,9 @@ class StudyWorkflowTests(unittest.TestCase):
                     "box_intervals = [1, 2, 4, 8, 16]",
                     'review_order = "oldest-first"',
                     'llm_validator = "codex_oauth"',
-                    'llm_model = "gpt-4.1-mini"',
+                    'llm_model = "gpt-5-codex"',
+                    'llm_base_url = "https://chatgpt.com/backend-api"',
+                    'llm_api = "openai-codex-responses"',
                     'llm_auth_file = "~/.codex/auth.json"',
                 ]
             ),
@@ -144,6 +148,192 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(outcome.schedule.new_box, 2)
         self.assertIn("Passed review promoted", outcome.schedule.reason_summary)
         self.assertFalse(due_cards(self.config))
+
+    def test_grade_concept_answer_uses_responses_api_with_codex_model(self) -> None:
+        config = replace(self.config, llm_model="gpt-5-codex")
+
+        class FakeHTTPResponse:
+            def __init__(self, payload: dict) -> None:
+                self._payload = json.dumps(payload).encode("utf-8")
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self) -> "FakeHTTPResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(http_request, timeout: int = 30):
+            captured["url"] = http_request.full_url
+            captured["body"] = json.loads(http_request.data.decode("utf-8"))
+            return FakeHTTPResponse(
+                {
+                    "output": [
+                        {
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": '{"result":"pass","summary":"The answer captured the core concurrency guarantee."}',
+                                }
+                            ]
+                        }
+                    ]
+                }
+            )
+
+        with patch("study.grading._resolve_auth_header", return_value="Bearer test-token"), patch(
+            "study.grading.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            grade = grade_concept_answer(
+                config,
+                prompt="What does a mutex do?",
+                reference_answer="It serializes access to shared state.",
+                user_answer="It prevents concurrent access to shared state.",
+            )
+
+        self.assertEqual(captured["url"], "https://chatgpt.com/backend-api/codex/responses")
+        self.assertEqual(captured["body"]["model"], "gpt-5-codex")
+        self.assertEqual(captured["body"]["text"]["format"]["type"], "json_object")
+        self.assertFalse(captured["body"]["store"])
+        self.assertIsInstance(captured["body"]["input"], list)
+        self.assertEqual(captured["body"]["input"][0]["content"][0]["type"], "input_text")
+        self.assertEqual(grade.result, "pass")
+        self.assertEqual(grade.model, "gpt-5-codex")
+
+    def test_grade_concept_answer_refreshes_codex_token_after_unauthorized(self) -> None:
+        auth_file = self.root / "auth.json"
+        auth_file.write_text(
+            json.dumps(
+                {
+                    "auth_mode": "codex_oauth",
+                    "tokens": {
+                        "access_token": "expired.header.payload",
+                        "refresh_token": "refresh-token",
+                        "id_token": "id-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = replace(
+            self.config,
+            llm_model="gpt-5-codex",
+            llm_base_url="https://chatgpt.com/backend-api",
+            llm_api="openai-codex-responses",
+            llm_auth_file=auth_file,
+        )
+
+        class FakeHTTPResponse:
+            def __init__(self, payload: dict) -> None:
+                self._payload = json.dumps(payload).encode("utf-8")
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self) -> "FakeHTTPResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+        seen_auth_headers: list[str] = []
+
+        def fake_urlopen(http_request, timeout: int = 30):
+            if http_request.full_url == "https://auth.openai.com/oauth/token":
+                return FakeHTTPResponse(
+                    {
+                        "access_token": "fresh.header.payload",
+                        "refresh_token": "refresh-token-2",
+                        "id_token": "id-token-2",
+                    }
+                )
+
+            seen_auth_headers.append(http_request.headers["Authorization"])
+            if len(seen_auth_headers) == 1:
+                raise error.HTTPError(
+                    http_request.full_url,
+                    401,
+                    "Unauthorized",
+                    hdrs=None,
+                    fp=io.BytesIO(
+                        b'{"error":{"message":"Missing scopes: api.responses.write","type":"invalid_request_error"}}'
+                    ),
+                )
+            return FakeHTTPResponse(
+                {
+                    "output": [
+                        {
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": '{"result":"pass","summary":"The refreshed token worked."}',
+                                }
+                            ]
+                        }
+                    ]
+                }
+            )
+
+        with patch("study.grading.request.urlopen", side_effect=fake_urlopen):
+            grade = grade_concept_answer(
+                config,
+                prompt="What does a mutex do?",
+                reference_answer="It serializes access to shared state.",
+                user_answer="It prevents concurrent access to shared state.",
+            )
+
+        self.assertEqual(seen_auth_headers, ["Bearer expired.header.payload", "Bearer fresh.header.payload"])
+        updated_auth = json.loads(auth_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated_auth["tokens"]["access_token"], "fresh.header.payload")
+        self.assertEqual(updated_auth["tokens"]["refresh_token"], "refresh-token-2")
+        self.assertEqual(grade.summary, "The refreshed token worked.")
+
+    def test_grade_concept_answer_parses_crlf_streaming_responses(self) -> None:
+        config = replace(
+            self.config,
+            llm_model="gpt-5-codex",
+            llm_base_url="https://chatgpt.com/backend-api",
+            llm_api="openai-codex-responses",
+        )
+
+        class FakeHTTPResponse:
+            def __init__(self, payload: str) -> None:
+                self._payload = payload.encode("utf-8")
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self) -> "FakeHTTPResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+        streaming_payload = (
+            'data: {"type":"response.output_text.delta","delta":"{\\"result\\":\\"pass\\","}\r\n\r\n'
+            'data: {"type":"response.output_text.delta","delta":"\\"summary\\":\\"CRLF streaming worked.\\"}"}\r\n\r\n'
+            "data: [DONE]\r\n\r\n"
+        )
+
+        with patch("study.grading._resolve_auth_header", return_value="Bearer test-token"), patch(
+            "study.grading.request.urlopen",
+            return_value=FakeHTTPResponse(streaming_payload),
+        ):
+            grade = grade_concept_answer(
+                config,
+                prompt="What does a mutex do?",
+                reference_answer="It serializes access to shared state.",
+                user_answer="It prevents concurrent access to shared state.",
+            )
+
+        self.assertEqual(grade.result, "pass")
+        self.assertEqual(grade.summary, "CRLF streaming worked.")
 
     def test_dashboard_stats_include_recent_failures(self) -> None:
         add_concept_card(self.config, title="Q1", prompt="Q1", answer="A1", topic="algorithms")

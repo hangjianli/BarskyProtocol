@@ -29,7 +29,7 @@ cards/
 - `study/card_contract.py`: TOML card contract parsing and text-import validation
 - `study/storage.py`: schema, queries, and mutations
 - `study/notebooks.py`: source import parsing and draft generation
-- `study/grading.py`: LLM-based grading and reusable model-call helpers
+- `study/grading.py`: LLM-based grading and reusable model-call helpers via a configurable Responses-compatible API
 - `study/validators.py`: deterministic exercise validation
 - `study/analytics.py`: failure clustering and recommendation generation
 - prompt markdown rendering and source-link rewriting live in `study/web.py`
@@ -76,6 +76,9 @@ flowchart TD
 - SQLite-backed
 - `.py` as the executable study format
 - deterministic validation before LLM validation for exercises
+- concept grading should use a Codex model by default
+- ChatGPT OAuth should target `https://chatgpt.com/backend-api/codex/responses`
+- API-key auth should target `https://api.openai.com/v1/responses`
 - explainable scheduling and recommendation output
 
 ## Testing Plan

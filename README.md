@@ -87,3 +87,11 @@ Important paths:
 - `study.sources_dir`
 - `study.workspaces_dir`
 - `study.llm_auth_file`
+- `study.llm_model`
+- `study.llm_validator`
+- `study.llm_base_url`
+- `study.llm_api`
+
+LLM grading defaults to a Codex model. For ChatGPT OAuth, the app uses the
+ChatGPT backend Codex Responses endpoint. You can still override the model and
+transport at runtime if needed.
