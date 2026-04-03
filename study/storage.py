@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS cards (
     source_kind TEXT NOT NULL DEFAULT '',
     source_cell_spec TEXT NOT NULL DEFAULT '',
     source_import_options TEXT NOT NULL DEFAULT '',
+    reference_text TEXT NOT NULL DEFAULT '',
     asset_path TEXT NOT NULL DEFAULT '',
     box INTEGER NOT NULL DEFAULT 1 CHECK(box BETWEEN 1 AND 5),
     lapse_count INTEGER NOT NULL DEFAULT 0,
@@ -135,6 +136,7 @@ class CardDetail:
     source_kind: str
     source_cell_spec: str
     source_import_options: str
+    references: str
     box: int
     lapse_count: int
     created_at: str
@@ -322,6 +324,8 @@ def _ensure_cards_columns(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE cards ADD COLUMN source_cell_spec TEXT NOT NULL DEFAULT ''")
     if "source_import_options" not in columns:
         connection.execute("ALTER TABLE cards ADD COLUMN source_import_options TEXT NOT NULL DEFAULT ''")
+    if "reference_text" not in columns:
+        connection.execute("ALTER TABLE cards ADD COLUMN reference_text TEXT NOT NULL DEFAULT ''")
 
 
 def _json_tags(tags: Iterable[str]) -> str:
@@ -343,6 +347,7 @@ def add_concept_card(
     source_kind: str = "",
     source_cell_spec: str = "",
     source_import_options: str = "",
+    references: str = "",
 ) -> int:
     created_at = utc_now()
     schedule = initial_card_state(config, now=created_at)
@@ -352,10 +357,10 @@ def add_concept_card(
             """
             INSERT INTO cards (
                 type, title, topic, tags, source, source_path, source_mode, source_label,
-                source_kind, source_cell_spec, source_import_options, asset_path, box, lapse_count,
+                source_kind, source_cell_spec, source_import_options, reference_text, asset_path, box, lapse_count,
                 created_at, updated_at, next_review_at, scheduler_name,
                 last_interval_days, last_schedule_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "concept",
@@ -369,6 +374,7 @@ def add_concept_card(
                 source_kind.strip(),
                 source_cell_spec.strip(),
                 source_import_options.strip(),
+                references.strip(),
                 "",
                 schedule.new_box,
                 0,
@@ -402,6 +408,7 @@ def add_exercise_card(
     source_kind: str = "",
     source_cell_spec: str = "",
     source_import_options: str = "",
+    references: str = "",
 ) -> int:
     created_at = utc_now()
     schedule = initial_card_state(config, now=created_at)
@@ -411,10 +418,10 @@ def add_exercise_card(
             """
             INSERT INTO cards (
                 type, title, topic, tags, source, source_path, source_mode, source_label,
-                source_kind, source_cell_spec, source_import_options, asset_path, box, lapse_count,
+                source_kind, source_cell_spec, source_import_options, reference_text, asset_path, box, lapse_count,
                 created_at, updated_at, next_review_at, scheduler_name,
                 last_interval_days, last_schedule_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "code_exercise",
@@ -428,6 +435,7 @@ def add_exercise_card(
                 source_kind.strip(),
                 source_cell_spec.strip(),
                 source_import_options.strip(),
+                references.strip(),
                 str(files.asset_dir),
                 schedule.new_box,
                 0,
@@ -528,6 +536,7 @@ def get_card_detail(config: StudyConfig, card_id: int) -> CardDetail | None:
         source_kind=str(row["source_kind"]),
         source_cell_spec=str(row["source_cell_spec"]),
         source_import_options=str(row["source_import_options"]),
+        references=str(row["reference_text"]),
         box=int(row["box"]),
         lapse_count=int(row["lapse_count"]),
         created_at=str(row["created_at"]),

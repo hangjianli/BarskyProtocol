@@ -269,6 +269,7 @@ class StudyWebApp:
           <p>{html.escape(card.last_schedule_reason)}</p>
         </section>
         {prompt_block}
+        {self._references_panel(card.references)}
         <section class="panel">
           <h2>Card Actions</h2>
           <p class="muted">Delete this card if it should no longer be part of the study set.</p>
@@ -393,6 +394,7 @@ class StudyWebApp:
             {self._input("tags", "Tags", values.get("tags", ""))}
             {self._textarea("prompt", "Prompt", values.get("prompt", ""))}
             {self._textarea("answer", "Answer", values.get("answer", ""))}
+            {self._textarea("references", "References", values.get("references", ""), rows=8)}
             {self._input("source", "Source", values.get("source", ""))}
             <div class="actions">
               <button class="button" type="submit">Create Card</button>
@@ -419,6 +421,7 @@ class StudyWebApp:
             {self._input("topic", "Topic", values.get("topic", ""))}
             {self._input("tags", "Tags", values.get("tags", ""))}
             {self._textarea("prompt", "Prompt", values.get("prompt", ""), rows=10)}
+            {self._textarea("references", "References", values.get("references", ""), rows=8)}
             {self._input("source", "Source", values.get("source", ""))}
             <div class="actions">
               <button class="button" type="submit">Create Exercise</button>
@@ -516,7 +519,7 @@ class StudyWebApp:
 
     def handle_new_concept_submit(self, environ: dict) -> Response:
         form = self._parse_form(environ)
-        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "prompt", "answer", "source")}
+        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "prompt", "answer", "references", "source")}
         errors: list[str] = []
         if not values["title"].strip():
             errors.append("Title is required.")
@@ -535,12 +538,13 @@ class StudyWebApp:
             topic=values["topic"],
             tags=[tag.strip() for tag in values["tags"].split(",") if tag.strip()],
             source=values["source"],
+            references=values["references"],
         )
         return self.redirect("/")
 
     def handle_new_exercise_submit(self, environ: dict) -> Response:
         form = self._parse_form(environ)
-        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "prompt", "source")}
+        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "prompt", "references", "source")}
         errors: list[str] = []
         if not values["title"].strip():
             errors.append("Title is required.")
@@ -568,6 +572,7 @@ class StudyWebApp:
             topic=values["topic"],
             tags=[tag.strip() for tag in values["tags"].split(",") if tag.strip()],
             source=values["source"],
+            references=values["references"],
             files=files,
         )
         return self.redirect(f"/cards/{card_id}")
@@ -979,6 +984,7 @@ class StudyWebApp:
             model_name = grade.model
 
         schedule = outcome.schedule
+        card = get_card_detail(self.config, outcome.card_id)
 
         content = f"""
         <section class="panel">
@@ -1013,6 +1019,7 @@ class StudyWebApp:
           </dl>
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
+        {self._references_panel(card.references if card is not None else "")}
         <section class="actions">
           <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
@@ -1093,6 +1100,7 @@ class StudyWebApp:
         queue_mode: str = "mixed",
     ) -> Response:
         schedule = outcome.schedule
+        card = get_card_detail(self.config, outcome.card_id)
         failing_html = "".join(
             f"<li><span>{html.escape(name)}</span><strong>fail</strong></li>" for name in failing_tests
         ) or "<li><span>No failing tests</span><strong>-</strong></li>"
@@ -1123,6 +1131,7 @@ class StudyWebApp:
           </dl>
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
+        {self._references_panel(card.references if card is not None else "")}
         <section class="actions">
           <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
@@ -1178,6 +1187,18 @@ class StudyWebApp:
 
         # Due dates only need the calendar day in the study UI.
         return parsed.astimezone().strftime("%Y-%m-%d")
+
+    def _references_panel(self, references: str) -> str:
+        if not references.strip():
+            return ""
+        return (
+            '<section class="panel">'
+            "<h2>References</h2>"
+            '<div class="markdown-content">'
+            f"{self._render_markdown(references)}"
+            "</div>"
+            "</section>"
+        )
 
     def _review_mode(self, query: dict[str, list[str]]) -> str:
         mode = query.get("mode", ["mixed"])[0]
@@ -1604,12 +1625,18 @@ class StudyWebApp:
             'answer = """\n'
             'It serializes access to shared state.\n'
             '"""\n'
+            'references = """\n'
+            '- Python docs: https://docs.python.org/3/library/threading.html\n'
+            '"""\n'
             '\n'
             '[[cards]]\n'
             'type = "code_exercise"\n'
             'title = "Split Words"\n'
             'topic = "nlp"\n'
             'tags = ["python", "tokenizer"]\n'
+            'references = """\n'
+            '- Chapter metadata: tokenizer walkthrough\n'
+            '"""\n'
             'prompt = """\n'
             'Implement `split_words(text)` and return a token list.\n'
             '"""\n'
