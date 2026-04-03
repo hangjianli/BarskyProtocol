@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -661,7 +662,12 @@ def dashboard_stats(config: StudyConfig) -> DashboardStats:
     )
 
 
-def start_review_attempt(config: StudyConfig, *, card_type: str | None = "concept") -> sqlite3.Row | None:
+def start_review_attempt(
+    config: StudyConfig,
+    *,
+    card_type: str | None = "concept",
+    review_order: str = "oldest-first",
+) -> sqlite3.Row | None:
     with managed_connection(config) as connection:
         active_query = """
             SELECT review_attempts.*, cards.title, cards.topic, cards.box, cards.next_review_at,
@@ -698,8 +704,14 @@ def start_review_attempt(config: StudyConfig, *, card_type: str | None = "concep
         if card_type is not None:
             card_query += " AND cards.type = ?"
             card_params.append(card_type)
-        card_query += " ORDER BY cards.next_review_at ASC, cards.id ASC LIMIT 1"
-        next_card = connection.execute(card_query, card_params).fetchone()
+        # Random start only changes which due card is opened first; queue navigation stays stable.
+        if review_order == "random":
+            card_query += " ORDER BY cards.next_review_at ASC, cards.id ASC"
+            eligible_cards = list(connection.execute(card_query, card_params))
+            next_card = random.choice(eligible_cards) if eligible_cards else None
+        else:
+            card_query += " ORDER BY cards.next_review_at ASC, cards.id ASC LIMIT 1"
+            next_card = connection.execute(card_query, card_params).fetchone()
         if next_card is None:
             return None
 

@@ -13,6 +13,13 @@ When the user opens the app:
 
 The scheduler decides what is due. The UI decides how it is presented.
 
+Queue start rules:
+
+- the dashboard should offer a normal review start and a shuffled review start
+- shuffled review start should pick a random eligible due card when a new attempt is created
+- shuffled start should not redefine previous or next navigation order on an already-open queue
+- the selected start mode should stay in review links so the next fresh attempt keeps the same behavior
+
 Queue navigation rules:
 
 - every review page should preserve the active queue mode: `mixed`, `concept`, or `exercise`
@@ -34,7 +41,7 @@ Queue navigation rules:
 
 Concept review is direct and single-page.
 
-## Code Exercise Review
+## Coding Review
 
 1. Create a fresh temp workspace.
 2. Copy canonical exercise assets into that workspace.
@@ -47,7 +54,7 @@ Concept review is direct and single-page.
 
 ```mermaid
 flowchart TD
-    S[Start Exercise Review] --> W[Create Temp Workspace]
+    S[Start Coding Review] --> W[Create Temp Workspace]
     W --> P[Show Prompt and Workspace Path]
     P --> E[User Edits answer.py Locally]
     E --> R[Run Tests]

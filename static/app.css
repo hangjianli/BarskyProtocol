@@ -217,6 +217,42 @@ textarea {
   gap: 16px;
 }
 
+.list-primary {
+  display: grid;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chip + .chip {
+  margin-left: 6px;
+}
+
+.chip-concept {
+  background: #eaf2ff;
+  border-color: #b8cdf6;
+  color: #24406b;
+}
+
+.chip-coding {
+  background: #e8f7ef;
+  border-color: #b7dcc6;
+  color: #1f5b3a;
+}
+
+.chip-topic {
+  background: #f4f0e6;
+}
+
 .answer-block {
   margin-top: 14px;
 }

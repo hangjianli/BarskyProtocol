@@ -140,13 +140,14 @@ class StudyWebApp:
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
           <div class="hero-controls">
             <a class="button" href="/review?mode=mixed">Start Review</a>
+            <a class="button button-secondary" href="/review?mode=mixed&amp;order=random">Shuffle Eligible</a>
             <label class="hero-select">
               <span>Quick actions</span>
               <select onchange="if (this.value) window.location = this.value;">
                 <option value="">Choose an action</option>
                 <optgroup label="Review">
                   <option value="/review?mode=concept">Concept queue</option>
-                  <option value="/review?mode=exercise">Exercise queue</option>
+                  <option value="/review?mode=exercise">Coding queue</option>
                 </optgroup>
                 <optgroup label="Create">
                   <option value="/cards/new/concept">New concept card</option>
@@ -188,9 +189,9 @@ class StudyWebApp:
         rows = "".join(
             f"""
             <li>
-              <span>
+              <span class="list-primary">
                 <a href="/cards/{int(card['id'])}">{html.escape(str(card['title']))}</a>
-                <small class="muted">· {html.escape(str(card['type']))} · {html.escape(str(card['topic'] or '-'))}</small>
+                <small class="muted">{self._render_card_badges(str(card['type']), str(card['topic'] or ''))}</small>
               </span>
               <strong>box {int(card['box'])} · created {html.escape(self._format_timestamp(str(card['created_at'])))}</strong>
             </li>
@@ -250,8 +251,9 @@ class StudyWebApp:
 
         content = f"""
         <section class="panel">
-          <p class="eyebrow">{html.escape(card.type)}</p>
+          <p class="eyebrow">{html.escape(self._card_type_label(card.type))}</p>
           <h1>{html.escape(card.title)}</h1>
+          <p class="meta">{self._render_card_badges(card.type, card.topic)}</p>
           <dl class="stats">
             <div><dt>Topic</dt><dd>{html.escape(card.topic or '-')}</dd></div>
             <div><dt>Tags</dt><dd>{html.escape(tags)}</dd></div>
@@ -307,10 +309,11 @@ class StudyWebApp:
         if card is None:
             return self.text("404 Not Found", status="404 Not Found")
         queue_mode = self._review_mode(query)
+        review_order = self._review_order(query)
         return self._render_source_view(
             card=card,
             query=query,
-            back_href=self._review_href(attempt_id, queue_mode=queue_mode),
+            back_href=self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order),
             source_title=str(attempt["title"]),
         )
 
@@ -758,8 +761,9 @@ class StudyWebApp:
 
     def handle_start_review(self, query: dict[str, list[str]]) -> Response:
         mode = self._review_mode(query)
+        review_order = self._review_order(query)
         card_type = None if mode == "mixed" else ("concept" if mode == "concept" else "code_exercise")
-        attempt = start_review_attempt(self.config, card_type=card_type)
+        attempt = start_review_attempt(self.config, card_type=card_type, review_order=review_order)
         if attempt is None:
             content = """
             <section class="panel">
@@ -771,7 +775,7 @@ class StudyWebApp:
             </section>
             """
             return self.html_page("No Cards Due", content)
-        return self.redirect(self._review_href(int(attempt["id"]), queue_mode=mode))
+        return self.redirect(self._review_href(int(attempt["id"]), queue_mode=mode, review_order=review_order))
 
     def handle_review_navigation(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
         attempt = get_review_attempt(self.config, attempt_id)
@@ -779,6 +783,7 @@ class StudyWebApp:
             return self.text("404 Not Found", status="404 Not Found")
 
         queue_mode = self._review_mode(query)
+        review_order = self._review_order(query)
         adjacent_card_id = adjacent_review_card_id(
             self.config,
             current_card_id=int(attempt["card_id"]),
@@ -786,28 +791,32 @@ class StudyWebApp:
             direction=query.get("direction", [""])[0],
         )
         if adjacent_card_id is None:
-            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
+            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order))
 
         adjacent_attempt = get_or_create_review_attempt_for_card(self.config, card_id=adjacent_card_id)
         if adjacent_attempt is None:
-            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
-        return self.redirect(self._review_href(int(adjacent_attempt["id"]), queue_mode=queue_mode))
+            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order))
+        return self.redirect(
+            self._review_href(int(adjacent_attempt["id"]), queue_mode=queue_mode, review_order=review_order)
+        )
 
     def handle_review_page(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
         attempt = get_review_attempt(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
         queue_mode = self._review_mode(query)
+        review_order = self._review_order(query)
 
         if str(attempt["card_type"]) == "code_exercise":
-            return self.render_exercise_review_page(attempt_id, queue_mode=queue_mode)
-        return self.render_review_page(attempt, queue_mode=queue_mode)
+            return self.render_exercise_review_page(attempt_id, queue_mode=queue_mode, review_order=review_order)
+        return self.render_review_page(attempt, queue_mode=queue_mode, review_order=review_order)
 
     def render_review_page(
         self,
         attempt: object,
         *,
         queue_mode: str = "mixed",
+        review_order: str = "oldest-first",
         errors: list[str] | None = None,
         user_answer: str = "",
     ) -> Response:
@@ -817,7 +826,7 @@ class StudyWebApp:
               <h1>Review Completed</h1>
               <p class="muted">Attempt {int(attempt['id'])} has already been recorded as {html.escape(str(attempt['result']))}.</p>
               <div class="actions">
-                <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+                <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
               </div>
             </section>
@@ -837,8 +846,8 @@ class StudyWebApp:
         <section class="panel">
           <p class="eyebrow">Concept Review</p>
           <h1>{html.escape(str(attempt['title']))}</h1>
-          <p class="meta">Topic: {html.escape(str(attempt['topic'] or '-'))} · Box: {attempt['box']} · Due: {html.escape(self._format_date(str(attempt['next_review_at'])))}</p>
-          {self._render_review_navigation(int(attempt['id']), int(attempt['card_id']), queue_mode=queue_mode)}
+          <p class="meta">{self._render_card_badges("concept", str(attempt['topic'] or ''))} · Box: {attempt['box']} · Due: {html.escape(self._format_date(str(attempt['next_review_at'])))}</p>
+          {self._render_review_navigation(int(attempt['id']), int(attempt['card_id']), queue_mode=queue_mode, review_order=review_order)}
         </section>
         <section class="panel">
           <h2>Prompt</h2>
@@ -848,6 +857,7 @@ class StudyWebApp:
           <h2>Your Answer</h2>
           <form method="post" action="/review/{int(attempt['id'])}/result" class="form-stack">
             <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
+            <input type="hidden" name="order" value="{html.escape(review_order)}">
             {self._textarea("user_answer", "Type your answer before grading", user_answer, rows=8)}
             <div class="actions">
               {self._select("action", "Review action", "grade", [("grade", "Grade with LLM"), ("incomplete", "Mark Incomplete")])}
@@ -864,6 +874,7 @@ class StudyWebApp:
         errors: list[str] | None = None,
         *,
         queue_mode: str = "mixed",
+        review_order: str = "oldest-first",
     ) -> Response:
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
@@ -871,15 +882,15 @@ class StudyWebApp:
         if attempt.status == "completed":
             content = f"""
             <section class="panel">
-              <h1>Review Completed</h1>
+              <h1>Coding Completed</h1>
               <p class="muted">Attempt {attempt.attempt_id} has already been recorded as {html.escape(attempt.result or '-')}.</p>
               <div class="actions">
-                <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+                <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
               </div>
             </section>
             """
-            return self.html_page("Exercise Review", content)
+            return self.html_page("Coding", content)
 
         error_html = ""
         if errors:
@@ -894,10 +905,10 @@ class StudyWebApp:
         content = f"""
         {error_html}
         <section class="panel">
-          <p class="eyebrow">Exercise Review</p>
+          <p class="eyebrow">Coding</p>
           <h1>{html.escape(attempt.title)}</h1>
-          <p class="meta">Topic: {html.escape(attempt.topic or '-')} · Box: {attempt.box} · Due: {html.escape(self._format_date(attempt.next_review_at))}</p>
-          {self._render_review_navigation(attempt_id, attempt.card_id, queue_mode=queue_mode)}
+          <p class="meta">{self._render_card_badges("code_exercise", attempt.topic or '')} · Box: {attempt.box} · Due: {html.escape(self._format_date(attempt.next_review_at))}</p>
+          {self._render_review_navigation(attempt_id, attempt.card_id, queue_mode=queue_mode, review_order=review_order)}
         </section>
         <section class="panel">
           <h2>Prompt</h2>
@@ -913,6 +924,7 @@ class StudyWebApp:
           </dl>
           <form method="post" action="/review/{attempt_id}/workspace" class="form-stack">
             <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
+            <input type="hidden" name="order" value="{html.escape(review_order)}">
             {self._select("action", "Workspace action", "create", [("create", "Reset Workspace" if attempt.workspace_path else "Create Workspace"), ("incomplete", "Mark Incomplete")])}
             <div class="actions">
               <button class="button" type="submit">Apply Workspace Action</button>
@@ -924,18 +936,20 @@ class StudyWebApp:
           <p class="muted">Edit the workspace locally, then run the test suite from the browser.</p>
           <form method="post" action="/review/{attempt_id}/validate" class="actions">
             <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
+            <input type="hidden" name="order" value="{html.escape(review_order)}">
             <button class="button" type="submit">Run Tests</button>
           </form>
           <p>{html.escape(attempt.validator_summary or 'No validation run yet.')}</p>
           <ul class="list">{failing_tests}</ul>
         </section>
         """
-        return self.html_page("Exercise Review", content)
+        return self.html_page("Coding", content)
 
     def handle_review_result(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
         action = self._first(form, "action")
         queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
+        review_order = self._review_order({"order": [self._first(form, "order")]})
         attempt = get_review_attempt(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -951,6 +965,7 @@ class StudyWebApp:
                 return self.render_review_page(
                     attempt,
                     queue_mode=queue_mode,
+                    review_order=review_order,
                     errors=["Type an answer before requesting grading."],
                     user_answer=submitted_answer,
                 )
@@ -965,6 +980,7 @@ class StudyWebApp:
                 return self.render_review_page(
                     attempt,
                     queue_mode=queue_mode,
+                    review_order=review_order,
                     errors=[str(exc)],
                     user_answer=submitted_answer,
                 )
@@ -1014,7 +1030,7 @@ class StudyWebApp:
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
         <section class="actions">
-          <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+          <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
@@ -1024,6 +1040,7 @@ class StudyWebApp:
         form = self._parse_form(environ)
         action = self._first(form, "action")
         queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
+        review_order = self._review_order({"order": [self._first(form, "order")]})
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -1043,15 +1060,17 @@ class StudyWebApp:
                 failing_tests=[],
                 workspace_path=attempt.workspace_path,
                 queue_mode=queue_mode,
+                review_order=review_order,
             )
 
         workspace_dir = create_workspace(self.config, attempt_id=attempt_id, asset_dir=Path(attempt.asset_path))
         update_attempt_workspace(self.config, attempt_id=attempt_id, workspace_path=str(workspace_dir))
-        return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
+        return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order))
 
     def handle_exercise_validate(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
         queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
+        review_order = self._review_order({"order": [self._first(form, "order")]})
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -1060,6 +1079,7 @@ class StudyWebApp:
                 attempt_id,
                 errors=["Create a workspace before running tests."],
                 queue_mode=queue_mode,
+                review_order=review_order,
             )
 
         validation = run_exercise_tests(Path(attempt.workspace_path))
@@ -1081,6 +1101,7 @@ class StudyWebApp:
             failing_tests=validation.failing_tests,
             workspace_path=attempt.workspace_path,
             queue_mode=queue_mode,
+            review_order=review_order,
         )
 
     def render_exercise_result_page(
@@ -1091,6 +1112,7 @@ class StudyWebApp:
         failing_tests: list[str],
         workspace_path: str | None,
         queue_mode: str = "mixed",
+        review_order: str = "oldest-first",
     ) -> Response:
         schedule = outcome.schedule
         failing_html = "".join(
@@ -1099,7 +1121,7 @@ class StudyWebApp:
 
         content = f"""
         <section class="panel">
-          <p class="eyebrow">Exercise Result</p>
+          <p class="eyebrow">Coding Result</p>
           <h1>{html.escape(outcome.title)}</h1>
           <p class="status status-{html.escape(outcome.result)}">Result: {html.escape(outcome.result)}</p>
         </section>
@@ -1124,11 +1146,11 @@ class StudyWebApp:
           <p>{html.escape(schedule.reason_summary)}</p>
         </section>
         <section class="actions">
-          <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+          <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
-        return self.html_page("Exercise Result", content)
+        return self.html_page("Coding Result", content)
 
     def handle_static_css(self) -> Response:
         css_path = self.static_dir / "app.css"
@@ -1185,10 +1207,28 @@ class StudyWebApp:
             return "mixed"
         return mode
 
-    def _review_href(self, attempt_id: int, *, queue_mode: str) -> str:
-        return f"/review/{attempt_id}?mode={queue_mode}"
+    def _review_order(self, query: dict[str, list[str]]) -> str:
+        review_order = query.get("order", [self.config.review_order])[0]
+        if review_order not in {"oldest-first", "random"}:
+            return self.config.review_order
+        return review_order
 
-    def _render_review_navigation(self, attempt_id: int, card_id: int, *, queue_mode: str) -> str:
+    def _review_order_suffix(self, review_order: str) -> str:
+        if review_order == "random":
+            return "&order=random"
+        return ""
+
+    def _review_href(self, attempt_id: int, *, queue_mode: str, review_order: str = "oldest-first") -> str:
+        return f"/review/{attempt_id}?mode={queue_mode}{self._review_order_suffix(review_order)}"
+
+    def _render_review_navigation(
+        self,
+        attempt_id: int,
+        card_id: int,
+        *,
+        queue_mode: str,
+        review_order: str,
+    ) -> str:
         previous_card = adjacent_review_card_id(
             self.config,
             current_card_id=card_id,
@@ -1204,6 +1244,7 @@ class StudyWebApp:
         previous_link = self._navigation_link(
             attempt_id,
             queue_mode=queue_mode,
+            review_order=review_order,
             direction="previous",
             label="Previous Card",
             enabled=previous_card is not None,
@@ -1211,6 +1252,7 @@ class StudyWebApp:
         next_link = self._navigation_link(
             attempt_id,
             queue_mode=queue_mode,
+            review_order=review_order,
             direction="next",
             label="Next Card",
             enabled=next_card is not None,
@@ -1222,14 +1264,51 @@ class StudyWebApp:
         attempt_id: int,
         *,
         queue_mode: str,
+        review_order: str,
         direction: str,
         label: str,
         enabled: bool,
     ) -> str:
         if not enabled:
             return f'<span class="button button-secondary button-disabled">{html.escape(label)}</span>'
-        href = f"/review/{attempt_id}/navigate?mode={queue_mode}&direction={direction}"
+        href = f"/review/{attempt_id}/navigate?mode={queue_mode}&direction={direction}{self._review_order_suffix(review_order)}"
         return f'<a class="button button-secondary" href="{html.escape(href)}">{html.escape(label)}</a>'
+
+    def _card_type_label(self, card_type: str) -> str:
+        if card_type == "code_exercise":
+            return "coding"
+        return card_type
+
+    def _card_type_chip_class(self, card_type: str) -> str:
+        if card_type == "code_exercise":
+            return "chip-coding"
+        return "chip-concept"
+
+    def _topic_chip_style(self, topic: str) -> str:
+        if not topic:
+            return ""
+
+        # A deterministic tint helps the same topic read as the same cluster across pages.
+        hue = sum(ord(char) for char in topic) % 360
+        return (
+            f"background-color:hsl({hue} 62% 94%);"
+            f"border-color:hsl({hue} 48% 74%);"
+            f"color:hsl({hue} 44% 28%);"
+        )
+
+    def _render_card_badges(self, card_type: str, topic: str) -> str:
+        type_badge = (
+            f'<span class="chip {self._card_type_chip_class(card_type)}">'
+            f"{html.escape(self._card_type_label(card_type))}</span>"
+        )
+        if not topic:
+            return type_badge
+
+        topic_badge = (
+            f'<span class="chip chip-topic" style="{html.escape(self._topic_chip_style(topic))}">'
+            f"{html.escape(topic)}</span>"
+        )
+        return f"{type_badge} {topic_badge}"
 
     def _render_source_view(
         self,

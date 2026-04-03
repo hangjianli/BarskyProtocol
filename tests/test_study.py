@@ -149,6 +149,18 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Passed review promoted", outcome.schedule.reason_summary)
         self.assertFalse(due_cards(self.config))
 
+    def test_start_review_attempt_can_shuffle_due_cards(self) -> None:
+        first_id = add_concept_card(self.config, title="First", prompt="Q1", answer="A1")
+        second_id = add_concept_card(self.config, title="Second", prompt="Q2", answer="A2")
+
+        with patch("study.storage.random.choice") as mocked_choice:
+            mocked_choice.side_effect = lambda rows: rows[-1]
+            attempt = start_review_attempt(self.config, card_type="concept", review_order="random")
+
+        self.assertEqual(int(attempt["card_id"]), second_id)
+        self.assertNotEqual(int(attempt["card_id"]), first_id)
+        mocked_choice.assert_called_once()
+
     def test_grade_concept_answer_uses_responses_api_with_codex_model(self) -> None:
         config = replace(self.config, llm_model="gpt-5-codex")
 
@@ -358,6 +370,7 @@ class StudyWorkflowTests(unittest.TestCase):
         status, _, dashboard_html = call_app(self.app, method="GET", path="/")
         self.assertEqual(status, "200 OK")
         self.assertIn("Start Review", dashboard_html)
+        self.assertIn("Shuffle Eligible", dashboard_html)
         self.assertIn("Due now", dashboard_html)
 
         status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed")
@@ -372,6 +385,12 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Type your answer before grading", review_html)
         self.assertRegex(review_html, r"Due: \d{4}-\d{2}-\d{2}")
         self.assertNotIn("+00:00", review_html)
+
+        status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed&order=random")
+        self.assertEqual(status, "303 See Other")
+        review_path, review_query = split_location(headers["Location"])
+        self.assertRegex(review_path, r"^/review/\d+$")
+        self.assertEqual(review_query, "mode=mixed&order=random")
 
         with patch("study.web.grade_concept_answer") as mocked_grade:
             mocked_grade.return_value.result = "fail"
@@ -663,7 +682,7 @@ class StudyWorkflowTests(unittest.TestCase):
         review_path, review_query = split_location(headers["Location"])
         status, _, body = call_app(self.app, method="GET", path=review_path, query_string=review_query)
         self.assertEqual(status, "200 OK")
-        self.assertIn("Exercise Review", body)
+        self.assertIn("Coding", body)
 
     def test_new_exercise_page_creates_card_and_assets(self) -> None:
         status, _, body = call_app(
@@ -837,7 +856,7 @@ class StudyWorkflowTests(unittest.TestCase):
 
         status, _, review_html = call_app(self.app, method="GET", path=review_path, query_string=review_query)
         self.assertEqual(status, "200 OK")
-        self.assertIn("Exercise Review", review_html)
+        self.assertIn("Coding", review_html)
         self.assertIn("Create Workspace", review_html)
 
         status, headers, _ = call_app(
