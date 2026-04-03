@@ -29,6 +29,7 @@ class ConceptContractCard:
     source_kind: str
     source_cell_spec: str
     source_import_options: str
+    references: str
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class ExerciseContractCard:
     source_kind: str
     source_cell_spec: str
     source_import_options: str
+    references: str
     slug: str
 
 
@@ -72,6 +74,7 @@ def import_cards_from_contract(config: StudyConfig, contract_text: str) -> list[
                         source_kind=card.source_kind,
                         source_cell_spec=card.source_cell_spec,
                         source_import_options=card.source_import_options,
+                        references=card.references,
                     )
                 )
                 continue
@@ -100,6 +103,7 @@ def import_cards_from_contract(config: StudyConfig, contract_text: str) -> list[
                     source_kind=card.source_kind,
                     source_cell_spec=card.source_cell_spec,
                     source_import_options=card.source_import_options,
+                    references=card.references,
                     files=files,
                 )
             )
@@ -156,6 +160,7 @@ def _parse_contract_card(raw_card: dict, *, index: int) -> ConceptContractCard |
             "source_kind",
             "source_cell_spec",
             "source_import_options",
+            "references",
         }
         _reject_unknown_fields(raw_card, allowed, index=index)
         return ConceptContractCard(
@@ -171,6 +176,7 @@ def _parse_contract_card(raw_card: dict, *, index: int) -> ConceptContractCard |
             source_kind=_optional_str(raw_card, "source_kind"),
             source_cell_spec=_optional_str(raw_card, "source_cell_spec"),
             source_import_options=_parse_import_options(raw_card.get("source_import_options")),
+            references=_optional_str(raw_card, "references"),
         )
 
     if card_type == "code_exercise":
@@ -190,6 +196,7 @@ def _parse_contract_card(raw_card: dict, *, index: int) -> ConceptContractCard |
             "source_kind",
             "source_cell_spec",
             "source_import_options",
+            "references",
             "slug",
         }
         _reject_unknown_fields(raw_card, allowed, index=index)
@@ -208,6 +215,7 @@ def _parse_contract_card(raw_card: dict, *, index: int) -> ConceptContractCard |
             source_kind=_optional_str(raw_card, "source_kind"),
             source_cell_spec=_optional_str(raw_card, "source_cell_spec"),
             source_import_options=_parse_import_options(raw_card.get("source_import_options")),
+            references=_optional_str(raw_card, "references"),
             slug=_optional_str(raw_card, "slug"),
         )
 

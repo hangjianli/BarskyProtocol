@@ -34,6 +34,9 @@ Queue navigation rules:
 
 Concept review is direct and single-page.
 
+After grading, the result page should show any card references so the user can
+inspect the linked source material or metadata tied to that question.
+
 ## Code Exercise Review
 
 1. Create a fresh temp workspace.
@@ -127,3 +130,14 @@ Delete behavior:
 
 Deletion should be explicit and user-initiated. It should not remove original
 source provenance files outside the card's owned exercise assets.
+
+## Card References
+
+Cards may include optional textual references entered during creation.
+
+Reference rules:
+
+- references are stored as freeform text or markdown
+- they may contain links or arbitrary metadata
+- they should be visible from card detail pages and review result pages
+- they should remain optional so lightweight cards stay lightweight

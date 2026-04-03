@@ -30,6 +30,7 @@ Important fields:
 - `source_kind`
 - `source_cell_spec`
 - `source_import_options`
+- `references`
 - `asset_path`
 - `box`
 - `lapse_count`
@@ -120,6 +121,17 @@ Imported cards should keep source provenance explicitly, including:
 - which import options were used
 
 That provenance exists to help debugging, tracing, and future re-imports.
+
+## References
+
+Cards may include optional textual references.
+
+References should be:
+
+- stored as plain text or markdown
+- entered at card-creation time
+- flexible enough to hold links, citations, or metadata in an arbitrary schema
+- shown after a review result so the learner can revisit the relevant source
 
 ## Deletion Rules
 
