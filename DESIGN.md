@@ -26,6 +26,7 @@ learning and coding practice.
 6. [Scheduling](./docs/design/scheduling.md)
 7. [Analytics and Recommendations](./docs/design/analytics.md)
 8. [Architecture and Roadmap](./docs/design/architecture.md)
+9. [Local Packaging](./docs/design/packaging.md)
 
 ## Quick Map
 
@@ -45,6 +46,8 @@ learning and coding practice.
   [analytics.md](./docs/design/analytics.md)
 - Module layout, routes, testing plan, and implementation phases:
   [architecture.md](./docs/design/architecture.md)
+- Installable local-app distribution, app-data layout, and packaging phases:
+  [packaging.md](./docs/design/packaging.md)
 
 ## Current Principles
 
