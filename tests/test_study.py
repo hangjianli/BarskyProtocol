@@ -29,6 +29,8 @@ from study.storage import (
     get_exercise_attempt_view,
     get_review_attempt,
     list_cards,
+    managed_connection,
+    reset_overdue_cards,
     start_review_attempt,
 )
 from study.web import StudyWebApp
@@ -358,6 +360,33 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot.recent_results["fail"], 1)
         self.assertEqual(snapshot.weak_topics[0][0], "algorithms")
 
+    def test_reset_overdue_cards_returns_cards_to_box_one(self) -> None:
+        overdue_id = add_concept_card(self.config, title="Old", prompt="Q1", answer="A1", topic="python")
+        current_id = add_concept_card(self.config, title="Today", prompt="Q2", answer="A2", topic="python")
+
+        with managed_connection(self.config) as connection:
+            # Make one card truly overdue while leaving the other due today.
+            connection.execute(
+                """
+                UPDATE cards
+                SET box = 4,
+                    next_review_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", overdue_id),
+            )
+
+        reset_count = reset_overdue_cards(self.config)
+
+        self.assertEqual(reset_count, 1)
+        overdue_detail = get_card_detail(self.config, overdue_id)
+        current_detail = get_card_detail(self.config, current_id)
+        self.assertEqual(overdue_detail.box, 1)
+        self.assertIn("Manual overdue reset", overdue_detail.last_schedule_reason)
+        self.assertEqual(current_detail.box, 1)
+        self.assertNotIn("Manual overdue reset", current_detail.last_schedule_reason)
+
     def test_web_dashboard_and_review_flow_render(self) -> None:
         add_concept_card(
             self.config,
@@ -371,6 +400,7 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("Start Review", dashboard_html)
         self.assertIn("Shuffle Eligible", dashboard_html)
+        self.assertIn("Reset Overdue", dashboard_html)
         self.assertIn("Due now", dashboard_html)
 
         status, headers, _ = call_app(self.app, method="GET", path="/review", query_string="mode=mixed")
@@ -408,6 +438,28 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Your answer", result_html)
         self.assertIn("Scheduler", result_html)
         self.assertIn("reset the card to box 1", result_html)
+
+    def test_dashboard_reset_overdue_action_redirects_with_count(self) -> None:
+        card_id = add_concept_card(self.config, title="Old", prompt="Q", answer="A", topic="python")
+        with managed_connection(self.config) as connection:
+            connection.execute(
+                """
+                UPDATE cards
+                SET box = 5,
+                    next_review_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", card_id),
+            )
+
+        status, headers, _ = call_app(self.app, method="POST", path="/dashboard/reset-overdue")
+        self.assertEqual(status, "303 See Other")
+        self.assertEqual(headers["Location"], "/?reset_count=1")
+
+        status, _, dashboard_html = call_app(self.app, method="GET", path="/", query_string="reset_count=1")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Reset 1 overdue card(s) back to box 1.", dashboard_html)
 
     def test_concept_review_renders_card_bound_source_links(self) -> None:
         source_file = self.root / "bpe_openai_gpt2.py"

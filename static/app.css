@@ -144,6 +144,10 @@ body {
   margin-top: 18px;
 }
 
+.inline-form {
+  margin: 0;
+}
+
 .hero-select {
   min-width: 240px;
   max-width: 320px;

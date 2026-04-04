@@ -37,6 +37,7 @@ from study.storage import (
     get_review_attempt,
     list_cards,
     recent_reviews_for_card,
+    reset_overdue_cards,
     start_review_attempt,
     update_attempt_workspace,
 )
@@ -69,7 +70,9 @@ class StudyWebApp:
         query = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
 
         if method == "GET" and path == "/":
-            response = self.handle_dashboard()
+            response = self.handle_dashboard(query)
+        elif method == "POST" and path == "/dashboard/reset-overdue":
+            response = self.handle_reset_overdue()
         elif method == "GET" and path == "/cards":
             response = self.handle_cards()
         elif method == "GET" and re.fullmatch(r"/cards/\d+/source", path):
@@ -127,20 +130,34 @@ class StudyWebApp:
         start_response(response.status, response.headers)
         return [response.body]
 
-    def handle_dashboard(self) -> Response:
+    def handle_dashboard(self, query: dict[str, list[str]] | None = None) -> Response:
         snapshot = dashboard_stats(self.config)
+        query = query or {}
         weak_topics = "".join(
             f"<li><span>{html.escape(topic)}</span><strong>{count}</strong></li>"
             for topic, count in snapshot.weak_topics
         ) or "<li><span>No failure clusters yet</span><strong>-</strong></li>"
+        reset_count = self._optional_int(query.get("reset_count", [""])[0]) or 0
+        reset_banner = ""
+        if "reset_count" in query:
+            reset_message = (
+                f"Reset {reset_count} overdue card(s) back to box 1."
+                if reset_count
+                else "No cards were overdue before today."
+            )
+            reset_banner = f'<section class="panel"><p class="muted">{html.escape(reset_message)}</p></section>'
 
         content = f"""
+        {reset_banner}
         <section class="hero">
           <h1>BarskyProtocol</h1>
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
           <div class="hero-controls">
             <a class="button" href="/review?mode=mixed">Start Review</a>
             <a class="button button-secondary" href="/review?mode=mixed&amp;order=random">Shuffle Eligible</a>
+            <form method="post" action="/dashboard/reset-overdue" class="inline-form">
+              <button class="button button-secondary" type="submit" onclick="return confirm('Reset all overdue cards back to box 1?');">Reset Overdue</button>
+            </form>
             <label class="hero-select">
               <span>Quick actions</span>
               <select onchange="if (this.value) window.location = this.value;">
@@ -183,6 +200,10 @@ class StudyWebApp:
         </section>
         """
         return self.html_page("Dashboard", content)
+
+    def handle_reset_overdue(self) -> Response:
+        reset_count = reset_overdue_cards(self.config)
+        return self.redirect(f"/?reset_count={reset_count}")
 
     def handle_cards(self) -> Response:
         cards = list_cards(self.config)
