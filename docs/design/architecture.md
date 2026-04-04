@@ -38,6 +38,7 @@ cards/
 ## Main Routes
 
 - `/`
+- `/dashboard/reset-overdue`
 - `/review`
 - `/review/:attempt_id`
 - `/cards`
