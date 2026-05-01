@@ -125,6 +125,34 @@ do not edit it directly.
 
 Cards should be manageable from the UI.
 
+Edit behavior:
+
+1. Open a card detail page.
+2. Choose `Edit Card`.
+3. Update metadata and card content in a dedicated edit form.
+4. Save changes without changing the card's scheduling state.
+5. Return to the updated card detail page.
+
+Concept edits should update:
+
+- title
+- topic
+- tags
+- source
+- prompt
+- answer
+
+Exercise edits should update:
+
+- title
+- topic
+- tags
+- source
+- prompt
+- `answer.py`
+- `solution.py`
+- `tests.py`
+
 Delete behavior:
 
 1. Delete the card row and all dependent review history through the database.
@@ -134,3 +162,15 @@ Delete behavior:
 
 Deletion should be explicit and user-initiated. It should not remove original
 source provenance files outside the card's owned exercise assets.
+
+## Text Contract Import Results
+
+Pasting a text card contract can create more than one card, so the import flow
+should not redirect straight to the first created card.
+
+Result behavior:
+
+1. Parse and import the full contract atomically.
+2. Show a confirmation page listing every created card.
+3. Link each created card from that summary so the user can inspect or edit any
+   of them immediately.
