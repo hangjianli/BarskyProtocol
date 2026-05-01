@@ -365,6 +365,7 @@ class StudyWorkflowTests(unittest.TestCase):
             prompt="What is a race condition?",
             answer="A bug caused by timing-dependent access to shared state.",
             topic="python",
+            references="- Python docs: https://docs.python.org/3/library/threading.html",
         )
 
         status, _, dashboard_html = call_app(self.app, method="GET", path="/")
@@ -408,6 +409,8 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertIn("Your answer", result_html)
         self.assertIn("Scheduler", result_html)
         self.assertIn("reset the card to box 1", result_html)
+        self.assertIn("References", result_html)
+        self.assertIn("docs.python.org", result_html)
 
     def test_concept_review_renders_card_bound_source_links(self) -> None:
         source_file = self.root / "bpe_openai_gpt2.py"
@@ -544,6 +547,7 @@ class StudyWorkflowTests(unittest.TestCase):
             answer="It discards half the remaining interval each step.",
             topic="algorithms",
             tags=["python", "search"],
+            references="- CLRS Chapter 2",
         )
         detail = get_card_detail(self.config, card_id)
         self.assertEqual(detail.title, "Binary search")
@@ -559,6 +563,8 @@ class StudyWorkflowTests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("Recent Reviews", detail_html)
         self.assertIn("Reveal answer", detail_html)
+        self.assertIn("References", detail_html)
+        self.assertIn("CLRS Chapter 2", detail_html)
         self.assertIn("Delete Card", detail_html)
 
     def test_delete_concept_card_removes_it_from_the_study_set(self) -> None:
@@ -689,12 +695,13 @@ class StudyWorkflowTests(unittest.TestCase):
             self.app,
             method="POST",
             path="/cards/new/exercise",
-            body="title=Binary+Search&topic=algorithms&tags=python%2Csearch&prompt=Implement+binary+search",
+            body="title=Binary+Search&topic=algorithms&tags=python%2Csearch&prompt=Implement+binary+search&references=-+Source:+algorithm+note",
         )
         self.assertEqual(status, "303 See Other")
 
         detail = get_card_detail(self.config, 1)
         self.assertEqual(detail.type, "code_exercise")
+        self.assertIn("algorithm note", detail.references)
         self.assertTrue(Path(detail.asset_path).is_dir())
         self.assertTrue((Path(detail.asset_path) / "tests.py").is_file())
 
@@ -713,12 +720,18 @@ class StudyWorkflowTests(unittest.TestCase):
             'answer = """\n'
             'It serializes access to shared state.\n'
             '"""\n'
+            'references = """\n'
+            '- Python docs: https://docs.python.org/3/library/threading.html\n'
+            '"""\n'
             '\n'
             '[[cards]]\n'
             'type = "code_exercise"\n'
             'title = "Adder"\n'
             'topic = "python"\n'
             'tags = "exercise, math"\n'
+            'references = """\n'
+            '- Exercise source: chapter note\n'
+            '"""\n'
             'prompt = """\n'
             'Implement add(a, b).\n'
             '"""\n'
@@ -765,8 +778,10 @@ class StudyWorkflowTests(unittest.TestCase):
         exercise = get_card_detail(self.config, 2)
         self.assertEqual(concept.type, "concept")
         self.assertEqual(concept.tags, ["threading", "concurrency"])
+        self.assertIn("docs.python.org", concept.references)
         self.assertEqual(exercise.type, "code_exercise")
         self.assertEqual(exercise.tags, ["exercise", "math"])
+        self.assertIn("chapter note", exercise.references)
         self.assertTrue((Path(exercise.asset_path) / "solution.py").is_file())
 
     def test_edit_concept_card_updates_content(self) -> None:

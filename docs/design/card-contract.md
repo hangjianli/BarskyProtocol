@@ -63,6 +63,7 @@ Optional fields:
 - `source_kind`
 - `source_cell_spec`
 - `source_import_options`
+- `references`
 
 ## `code_exercise` Card Contract
 
@@ -86,6 +87,7 @@ Optional fields:
 - `source_kind`
 - `source_cell_spec`
 - `source_import_options`
+- `references`
 - `slug`
 
 `answer_py`, `solution_py`, and `tests_py` become the generated exercise files.
@@ -128,6 +130,10 @@ topic = "nlp"
 tags = ["python", "tokenizer"]
 source = "LLMs-from-scratch ch02"
 source_kind = "py"
+references = """
+- Chapter metadata: https://example.com/ch02
+- Source section: tokenizer walkthrough
+"""
 prompt = """
 Implement `split_words(text)` and return a token list.
 """
