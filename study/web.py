@@ -38,6 +38,7 @@ from study.storage import (
     list_cards,
     recent_reviews_for_card,
     start_review_attempt,
+    update_card,
     update_attempt_workspace,
 )
 from study.validators import run_exercise_tests
@@ -74,6 +75,10 @@ class StudyWebApp:
             response = self.handle_cards()
         elif method == "GET" and re.fullmatch(r"/cards/\d+/source", path):
             response = self.handle_card_source_view(int(path.split("/")[-2]), query)
+        elif method == "GET" and re.fullmatch(r"/cards/\d+/edit", path):
+            response = self.handle_card_edit_form(int(path.split("/")[-2]))
+        elif method == "POST" and re.fullmatch(r"/cards/\d+/edit", path):
+            response = self.handle_card_edit_submit(int(path.split("/")[-2]), environ)
         elif method == "GET" and re.fullmatch(r"/cards/\d+", path):
             response = self.handle_card_detail(int(path.rsplit("/", 1)[-1]))
         elif method == "POST" and re.fullmatch(r"/cards/\d+/delete", path):
@@ -90,6 +95,8 @@ class StudyWebApp:
             response = self.handle_import_text_form()
         elif method == "POST" and path == "/cards/import-text":
             response = self.handle_import_text_submit(environ)
+        elif method == "GET" and path == "/cards/import-text/result":
+            response = self.handle_import_text_result(query)
         elif method == "GET" and path == "/cards/import-notebook":
             response = self.handle_import_notebook_form()
         elif method == "POST" and path == "/cards/import-notebook/preview":
@@ -140,13 +147,14 @@ class StudyWebApp:
           <p class="muted">A local-first study loop for concept recall and coding drills.</p>
           <div class="hero-controls">
             <a class="button" href="/review?mode=mixed">Start Review</a>
+            <a class="button button-secondary" href="/review?mode=mixed&amp;order=random">Shuffle Eligible</a>
             <label class="hero-select">
               <span>Quick actions</span>
               <select onchange="if (this.value) window.location = this.value;">
                 <option value="">Choose an action</option>
                 <optgroup label="Review">
                   <option value="/review?mode=concept">Concept queue</option>
-                  <option value="/review?mode=exercise">Exercise queue</option>
+                  <option value="/review?mode=exercise">Coding queue</option>
                 </optgroup>
                 <optgroup label="Create">
                   <option value="/cards/new/concept">New concept card</option>
@@ -188,9 +196,9 @@ class StudyWebApp:
         rows = "".join(
             f"""
             <li>
-              <span>
+              <span class="list-primary">
                 <a href="/cards/{int(card['id'])}">{html.escape(str(card['title']))}</a>
-                <small class="muted">· {html.escape(str(card['type']))} · {html.escape(str(card['topic'] or '-'))}</small>
+                <small class="muted">{self._render_card_badges(str(card['type']), str(card['topic'] or ''))}</small>
               </span>
               <strong>box {int(card['box'])} · created {html.escape(self._format_timestamp(str(card['created_at'])))}</strong>
             </li>
@@ -237,11 +245,17 @@ class StudyWebApp:
             </section>
             """
         elif card.type == "code_exercise":
+            exercise_prompt = self._exercise_prompt_text(card)
             prompt_block = f"""
+            <section class="panel">
+              <h2>Prompt</h2>
+              <div class="markdown-content">{self._render_markdown(exercise_prompt, card_id=card.id)}</div>
+            </section>
             <section class="panel">
               <h2>Exercise Files</h2>
               <dl class="stats">
                 <div><dt>Asset path</dt><dd>{html.escape(card.asset_path)}</dd></div>
+                <div><dt>Prompt file</dt><dd>{html.escape(card.prompt_path or '-')}</dd></div>
                 <div><dt>Entry point</dt><dd>{html.escape(card.entrypoint or '-')}</dd></div>
                 <div><dt>Tests</dt><dd>{html.escape(card.tests_path or '-')}</dd></div>
               </dl>
@@ -250,8 +264,9 @@ class StudyWebApp:
 
         content = f"""
         <section class="panel">
-          <p class="eyebrow">{html.escape(card.type)}</p>
+          <p class="eyebrow">{html.escape(self._card_type_label(card.type))}</p>
           <h1>{html.escape(card.title)}</h1>
+          <p class="meta">{self._render_card_badges(card.type, card.topic)}</p>
           <dl class="stats">
             <div><dt>Topic</dt><dd>{html.escape(card.topic or '-')}</dd></div>
             <div><dt>Tags</dt><dd>{html.escape(tags)}</dd></div>
@@ -272,7 +287,10 @@ class StudyWebApp:
         {self._references_panel(card.references)}
         <section class="panel">
           <h2>Card Actions</h2>
-          <p class="muted">Delete this card if it should no longer be part of the study set.</p>
+          <p class="muted">Edit this card or delete it if it should no longer be part of the study set.</p>
+          <div class="actions">
+            <a class="button button-secondary" href="/cards/{card.id}/edit">Edit Card</a>
+          </div>
           <form method="post" action="/cards/{card.id}/delete" class="actions">
             <button class="button button-danger" type="submit" onclick="return confirm('Delete this card and its review history?');">Delete Card</button>
           </form>
@@ -288,6 +306,107 @@ class StudyWebApp:
         if not delete_card(self.config, card_id):
             return self.text("404 Not Found", status="404 Not Found")
         return self.redirect("/cards")
+
+    def handle_card_edit_form(
+        self,
+        card_id: int,
+        *,
+        errors: list[str] | None = None,
+        values: dict[str, str] | None = None,
+    ) -> Response:
+        card = get_card_detail(self.config, card_id)
+        if card is None:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        values = values or self._card_form_values(card)
+        error_html = ""
+        if errors:
+            error_items = "".join(f"<li>{html.escape(error)}</li>" for error in errors)
+            error_html = f'<section class="panel panel-error"><h2>Fix these fields</h2><ul class="errors">{error_items}</ul></section>'
+
+        if card.type == "concept":
+            content = f"""
+            {error_html}
+            <section class="panel">
+              <h1>Edit Concept Card</h1>
+              <form method="post" action="/cards/{card.id}/edit" class="form-stack">
+                {self._input("title", "Title", values.get("title", ""))}
+                {self._input("topic", "Topic", values.get("topic", ""))}
+                {self._input("tags", "Tags", values.get("tags", ""))}
+                {self._input("source", "Source", values.get("source", ""))}
+                {self._textarea("prompt", "Prompt", values.get("prompt", ""), rows=10)}
+                {self._textarea("answer", "Answer", values.get("answer", ""), rows=8)}
+                <div class="actions">
+                  <button class="button" type="submit">Save Changes</button>
+                  <a class="button button-secondary" href="/cards/{card.id}">Cancel</a>
+                </div>
+              </form>
+            </section>
+            """
+            return self.html_page(f"Edit · {card.title}", content)
+
+        content = f"""
+        {error_html}
+        <section class="panel">
+          <h1>Edit Exercise Card</h1>
+          <form method="post" action="/cards/{card.id}/edit" class="form-stack">
+            {self._input("title", "Title", values.get("title", ""))}
+            {self._input("topic", "Topic", values.get("topic", ""))}
+            {self._input("tags", "Tags", values.get("tags", ""))}
+            {self._input("source", "Source", values.get("source", ""))}
+            {self._textarea("prompt", "Prompt", values.get("prompt", ""), rows=12)}
+            {self._textarea("answer_py", "answer.py", values.get("answer_py", ""), rows=12)}
+            {self._textarea("solution_py", "solution.py", values.get("solution_py", ""), rows=12)}
+            {self._textarea("tests_py", "tests.py", values.get("tests_py", ""), rows=14)}
+            <div class="actions">
+              <button class="button" type="submit">Save Changes</button>
+              <a class="button button-secondary" href="/cards/{card.id}">Cancel</a>
+            </div>
+          </form>
+        </section>
+        """
+        return self.html_page(f"Edit · {card.title}", content)
+
+    def handle_card_edit_submit(self, card_id: int, environ: dict) -> Response:
+        card = get_card_detail(self.config, card_id)
+        if card is None:
+            return self.text("404 Not Found", status="404 Not Found")
+
+        form = self._parse_form(environ)
+        values = {key: self._first(form, key) for key in ("title", "topic", "tags", "source", "prompt", "answer")}
+        if card.type == "code_exercise":
+            values["answer_py"] = self._first(form, "answer_py")
+            values["solution_py"] = self._first(form, "solution_py")
+            values["tests_py"] = self._first(form, "tests_py")
+
+        errors: list[str] = []
+        if not values["title"].strip():
+            errors.append("Title is required.")
+        if not values["prompt"].strip():
+            errors.append("Prompt is required.")
+        if card.type == "concept" and not values["answer"].strip():
+            errors.append("Answer is required.")
+        if card.type == "code_exercise":
+            for field_name in ("answer_py", "solution_py", "tests_py"):
+                if not values[field_name].strip():
+                    errors.append(f"{field_name} is required.")
+        if errors:
+            return self.handle_card_edit_form(card_id, errors=errors, values=values)
+
+        update_card(
+            self.config,
+            card_id=card_id,
+            title=values["title"],
+            topic=values["topic"],
+            tags=[tag.strip() for tag in values["tags"].split(",") if tag.strip()],
+            source=values["source"],
+            prompt=values["prompt"],
+            answer=values.get("answer"),
+            answer_body=values.get("answer_py"),
+            solution_body=values.get("solution_py"),
+            tests_body=values.get("tests_py"),
+        )
+        return self.redirect(f"/cards/{card_id}")
 
     def handle_card_source_view(self, card_id: int, query: dict[str, list[str]]) -> Response:
         card = get_card_detail(self.config, card_id)
@@ -308,10 +427,11 @@ class StudyWebApp:
         if card is None:
             return self.text("404 Not Found", status="404 Not Found")
         queue_mode = self._review_mode(query)
+        review_order = self._review_order(query)
         return self._render_source_view(
             card=card,
             query=query,
-            back_href=self._review_href(attempt_id, queue_mode=queue_mode),
+            back_href=self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order),
             source_title=str(attempt["title"]),
         )
 
@@ -515,7 +635,52 @@ class StudyWebApp:
                 errors=["The contract did not create any cards."],
                 values={"contract_text": contract_text},
             )
-        return self.redirect(f"/cards/{created_ids[0]}")
+        query = urlencode([("ids", str(card_id)) for card_id in created_ids])
+        return self.redirect(f"/cards/import-text/result?{query}")
+
+    def handle_import_text_result(self, query: dict[str, list[str]]) -> Response:
+        raw_ids = query.get("ids", [])
+        if not raw_ids:
+            return self.redirect("/cards")
+
+        created_cards = []
+        for raw_id in raw_ids:
+            try:
+                card_id = int(raw_id)
+            except ValueError:
+                continue
+            card = get_card_detail(self.config, card_id)
+            if card is not None:
+                created_cards.append(card)
+
+        if not created_cards:
+            return self.redirect("/cards")
+
+        rows = "".join(
+            f"""
+            <li>
+              <span>
+                <a href="/cards/{card.id}">{html.escape(card.title)}</a>
+                <small class="muted">· {html.escape(card.type)} · {html.escape(card.topic or '-')}</small>
+              </span>
+              <strong>box {card.box} · created {html.escape(self._format_timestamp(card.created_at))}</strong>
+            </li>
+            """
+            for card in created_cards
+        )
+
+        content = f"""
+        <section class="panel">
+          <h1>Imported Cards</h1>
+          <p class="muted">Created {len(created_cards)} card(s) from the pasted contract.</p>
+          <ul class="list">{rows}</ul>
+          <div class="actions">
+            <a class="button" href="/cards">View All Cards</a>
+            <a class="button button-secondary" href="/cards/import-text">Import Another Contract</a>
+          </div>
+        </section>
+        """
+        return self.html_page("Imported Cards", content)
 
     def handle_new_concept_submit(self, environ: dict) -> Response:
         form = self._parse_form(environ)
@@ -763,8 +928,9 @@ class StudyWebApp:
 
     def handle_start_review(self, query: dict[str, list[str]]) -> Response:
         mode = self._review_mode(query)
+        review_order = self._review_order(query)
         card_type = None if mode == "mixed" else ("concept" if mode == "concept" else "code_exercise")
-        attempt = start_review_attempt(self.config, card_type=card_type)
+        attempt = start_review_attempt(self.config, card_type=card_type, review_order=review_order)
         if attempt is None:
             content = """
             <section class="panel">
@@ -776,7 +942,7 @@ class StudyWebApp:
             </section>
             """
             return self.html_page("No Cards Due", content)
-        return self.redirect(self._review_href(int(attempt["id"]), queue_mode=mode))
+        return self.redirect(self._review_href(int(attempt["id"]), queue_mode=mode, review_order=review_order))
 
     def handle_review_navigation(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
         attempt = get_review_attempt(self.config, attempt_id)
@@ -784,6 +950,7 @@ class StudyWebApp:
             return self.text("404 Not Found", status="404 Not Found")
 
         queue_mode = self._review_mode(query)
+        review_order = self._review_order(query)
         adjacent_card_id = adjacent_review_card_id(
             self.config,
             current_card_id=int(attempt["card_id"]),
@@ -791,28 +958,32 @@ class StudyWebApp:
             direction=query.get("direction", [""])[0],
         )
         if adjacent_card_id is None:
-            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
+            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order))
 
         adjacent_attempt = get_or_create_review_attempt_for_card(self.config, card_id=adjacent_card_id)
         if adjacent_attempt is None:
-            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
-        return self.redirect(self._review_href(int(adjacent_attempt["id"]), queue_mode=queue_mode))
+            return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order))
+        return self.redirect(
+            self._review_href(int(adjacent_attempt["id"]), queue_mode=queue_mode, review_order=review_order)
+        )
 
     def handle_review_page(self, attempt_id: int, query: dict[str, list[str]]) -> Response:
         attempt = get_review_attempt(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
         queue_mode = self._review_mode(query)
+        review_order = self._review_order(query)
 
         if str(attempt["card_type"]) == "code_exercise":
-            return self.render_exercise_review_page(attempt_id, queue_mode=queue_mode)
-        return self.render_review_page(attempt, queue_mode=queue_mode)
+            return self.render_exercise_review_page(attempt_id, queue_mode=queue_mode, review_order=review_order)
+        return self.render_review_page(attempt, queue_mode=queue_mode, review_order=review_order)
 
     def render_review_page(
         self,
         attempt: object,
         *,
         queue_mode: str = "mixed",
+        review_order: str = "oldest-first",
         errors: list[str] | None = None,
         user_answer: str = "",
     ) -> Response:
@@ -822,7 +993,7 @@ class StudyWebApp:
               <h1>Review Completed</h1>
               <p class="muted">Attempt {int(attempt['id'])} has already been recorded as {html.escape(str(attempt['result']))}.</p>
               <div class="actions">
-                <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+                <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
               </div>
             </section>
@@ -842,8 +1013,8 @@ class StudyWebApp:
         <section class="panel">
           <p class="eyebrow">Concept Review</p>
           <h1>{html.escape(str(attempt['title']))}</h1>
-          <p class="meta">Topic: {html.escape(str(attempt['topic'] or '-'))} · Box: {attempt['box']} · Due: {html.escape(self._format_date(str(attempt['next_review_at'])))}</p>
-          {self._render_review_navigation(int(attempt['id']), int(attempt['card_id']), queue_mode=queue_mode)}
+          <p class="meta">{self._render_card_badges("concept", str(attempt['topic'] or ''))} · Box: {attempt['box']} · Due: {html.escape(self._format_date(str(attempt['next_review_at'])))}</p>
+          {self._render_review_navigation(int(attempt['id']), int(attempt['card_id']), queue_mode=queue_mode, review_order=review_order)}
         </section>
         <section class="panel">
           <h2>Prompt</h2>
@@ -853,6 +1024,7 @@ class StudyWebApp:
           <h2>Your Answer</h2>
           <form method="post" action="/review/{int(attempt['id'])}/result" class="form-stack">
             <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
+            <input type="hidden" name="order" value="{html.escape(review_order)}">
             {self._textarea("user_answer", "Type your answer before grading", user_answer, rows=8)}
             <div class="actions">
               {self._select("action", "Review action", "grade", [("grade", "Grade with LLM"), ("incomplete", "Mark Incomplete")])}
@@ -869,6 +1041,7 @@ class StudyWebApp:
         errors: list[str] | None = None,
         *,
         queue_mode: str = "mixed",
+        review_order: str = "oldest-first",
     ) -> Response:
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
@@ -876,15 +1049,15 @@ class StudyWebApp:
         if attempt.status == "completed":
             content = f"""
             <section class="panel">
-              <h1>Review Completed</h1>
+              <h1>Coding Completed</h1>
               <p class="muted">Attempt {attempt.attempt_id} has already been recorded as {html.escape(attempt.result or '-')}.</p>
               <div class="actions">
-                <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+                <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
                 <a class="button button-secondary" href="/">Dashboard</a>
               </div>
             </section>
             """
-            return self.html_page("Exercise Review", content)
+            return self.html_page("Coding", content)
 
         error_html = ""
         if errors:
@@ -899,10 +1072,10 @@ class StudyWebApp:
         content = f"""
         {error_html}
         <section class="panel">
-          <p class="eyebrow">Exercise Review</p>
+          <p class="eyebrow">Coding</p>
           <h1>{html.escape(attempt.title)}</h1>
-          <p class="meta">Topic: {html.escape(attempt.topic or '-')} · Box: {attempt.box} · Due: {html.escape(self._format_date(attempt.next_review_at))}</p>
-          {self._render_review_navigation(attempt_id, attempt.card_id, queue_mode=queue_mode)}
+          <p class="meta">{self._render_card_badges("code_exercise", attempt.topic or '')} · Box: {attempt.box} · Due: {html.escape(self._format_date(attempt.next_review_at))}</p>
+          {self._render_review_navigation(attempt_id, attempt.card_id, queue_mode=queue_mode, review_order=review_order)}
         </section>
         <section class="panel">
           <h2>Prompt</h2>
@@ -918,6 +1091,7 @@ class StudyWebApp:
           </dl>
           <form method="post" action="/review/{attempt_id}/workspace" class="form-stack">
             <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
+            <input type="hidden" name="order" value="{html.escape(review_order)}">
             {self._select("action", "Workspace action", "create", [("create", "Reset Workspace" if attempt.workspace_path else "Create Workspace"), ("incomplete", "Mark Incomplete")])}
             <div class="actions">
               <button class="button" type="submit">Apply Workspace Action</button>
@@ -929,18 +1103,20 @@ class StudyWebApp:
           <p class="muted">Edit the workspace locally, then run the test suite from the browser.</p>
           <form method="post" action="/review/{attempt_id}/validate" class="actions">
             <input type="hidden" name="mode" value="{html.escape(queue_mode)}">
+            <input type="hidden" name="order" value="{html.escape(review_order)}">
             <button class="button" type="submit">Run Tests</button>
           </form>
           <p>{html.escape(attempt.validator_summary or 'No validation run yet.')}</p>
           <ul class="list">{failing_tests}</ul>
         </section>
         """
-        return self.html_page("Exercise Review", content)
+        return self.html_page("Coding", content)
 
     def handle_review_result(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
         action = self._first(form, "action")
         queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
+        review_order = self._review_order({"order": [self._first(form, "order")]})
         attempt = get_review_attempt(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -956,6 +1132,7 @@ class StudyWebApp:
                 return self.render_review_page(
                     attempt,
                     queue_mode=queue_mode,
+                    review_order=review_order,
                     errors=["Type an answer before requesting grading."],
                     user_answer=submitted_answer,
                 )
@@ -970,6 +1147,7 @@ class StudyWebApp:
                 return self.render_review_page(
                     attempt,
                     queue_mode=queue_mode,
+                    review_order=review_order,
                     errors=[str(exc)],
                     user_answer=submitted_answer,
                 )
@@ -1021,7 +1199,7 @@ class StudyWebApp:
         </section>
         {self._references_panel(card.references if card is not None else "")}
         <section class="actions">
-          <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+          <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
@@ -1031,6 +1209,7 @@ class StudyWebApp:
         form = self._parse_form(environ)
         action = self._first(form, "action")
         queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
+        review_order = self._review_order({"order": [self._first(form, "order")]})
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -1050,15 +1229,17 @@ class StudyWebApp:
                 failing_tests=[],
                 workspace_path=attempt.workspace_path,
                 queue_mode=queue_mode,
+                review_order=review_order,
             )
 
         workspace_dir = create_workspace(self.config, attempt_id=attempt_id, asset_dir=Path(attempt.asset_path))
         update_attempt_workspace(self.config, attempt_id=attempt_id, workspace_path=str(workspace_dir))
-        return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode))
+        return self.redirect(self._review_href(attempt_id, queue_mode=queue_mode, review_order=review_order))
 
     def handle_exercise_validate(self, environ: dict, attempt_id: int) -> Response:
         form = self._parse_form(environ)
         queue_mode = self._review_mode({"mode": [self._first(form, "mode")]})
+        review_order = self._review_order({"order": [self._first(form, "order")]})
         attempt = get_exercise_attempt_view(self.config, attempt_id)
         if attempt is None:
             return self.text("404 Not Found", status="404 Not Found")
@@ -1067,6 +1248,7 @@ class StudyWebApp:
                 attempt_id,
                 errors=["Create a workspace before running tests."],
                 queue_mode=queue_mode,
+                review_order=review_order,
             )
 
         validation = run_exercise_tests(Path(attempt.workspace_path))
@@ -1088,6 +1270,7 @@ class StudyWebApp:
             failing_tests=validation.failing_tests,
             workspace_path=attempt.workspace_path,
             queue_mode=queue_mode,
+            review_order=review_order,
         )
 
     def render_exercise_result_page(
@@ -1098,6 +1281,7 @@ class StudyWebApp:
         failing_tests: list[str],
         workspace_path: str | None,
         queue_mode: str = "mixed",
+        review_order: str = "oldest-first",
     ) -> Response:
         schedule = outcome.schedule
         card = get_card_detail(self.config, outcome.card_id)
@@ -1107,7 +1291,7 @@ class StudyWebApp:
 
         content = f"""
         <section class="panel">
-          <p class="eyebrow">Exercise Result</p>
+          <p class="eyebrow">Coding Result</p>
           <h1>{html.escape(outcome.title)}</h1>
           <p class="status status-{html.escape(outcome.result)}">Result: {html.escape(outcome.result)}</p>
         </section>
@@ -1133,11 +1317,11 @@ class StudyWebApp:
         </section>
         {self._references_panel(card.references if card is not None else "")}
         <section class="actions">
-          <a class="button" href="/review?mode={html.escape(queue_mode)}">Continue Review</a>
+          <a class="button" href="/review?mode={html.escape(queue_mode)}{self._review_order_suffix(review_order)}">Continue Review</a>
           <a class="button button-secondary" href="/">Dashboard</a>
         </section>
         """
-        return self.html_page("Exercise Result", content)
+        return self.html_page("Coding Result", content)
 
     def handle_static_css(self) -> Response:
         css_path = self.static_dir / "app.css"
@@ -1206,10 +1390,28 @@ class StudyWebApp:
             return "mixed"
         return mode
 
-    def _review_href(self, attempt_id: int, *, queue_mode: str) -> str:
-        return f"/review/{attempt_id}?mode={queue_mode}"
+    def _review_order(self, query: dict[str, list[str]]) -> str:
+        review_order = query.get("order", [self.config.review_order])[0]
+        if review_order not in {"oldest-first", "random"}:
+            return self.config.review_order
+        return review_order
 
-    def _render_review_navigation(self, attempt_id: int, card_id: int, *, queue_mode: str) -> str:
+    def _review_order_suffix(self, review_order: str) -> str:
+        if review_order == "random":
+            return "&order=random"
+        return ""
+
+    def _review_href(self, attempt_id: int, *, queue_mode: str, review_order: str = "oldest-first") -> str:
+        return f"/review/{attempt_id}?mode={queue_mode}{self._review_order_suffix(review_order)}"
+
+    def _render_review_navigation(
+        self,
+        attempt_id: int,
+        card_id: int,
+        *,
+        queue_mode: str,
+        review_order: str,
+    ) -> str:
         previous_card = adjacent_review_card_id(
             self.config,
             current_card_id=card_id,
@@ -1225,6 +1427,7 @@ class StudyWebApp:
         previous_link = self._navigation_link(
             attempt_id,
             queue_mode=queue_mode,
+            review_order=review_order,
             direction="previous",
             label="Previous Card",
             enabled=previous_card is not None,
@@ -1232,6 +1435,7 @@ class StudyWebApp:
         next_link = self._navigation_link(
             attempt_id,
             queue_mode=queue_mode,
+            review_order=review_order,
             direction="next",
             label="Next Card",
             enabled=next_card is not None,
@@ -1243,14 +1447,51 @@ class StudyWebApp:
         attempt_id: int,
         *,
         queue_mode: str,
+        review_order: str,
         direction: str,
         label: str,
         enabled: bool,
     ) -> str:
         if not enabled:
             return f'<span class="button button-secondary button-disabled">{html.escape(label)}</span>'
-        href = f"/review/{attempt_id}/navigate?mode={queue_mode}&direction={direction}"
+        href = f"/review/{attempt_id}/navigate?mode={queue_mode}&direction={direction}{self._review_order_suffix(review_order)}"
         return f'<a class="button button-secondary" href="{html.escape(href)}">{html.escape(label)}</a>'
+
+    def _card_type_label(self, card_type: str) -> str:
+        if card_type == "code_exercise":
+            return "coding"
+        return card_type
+
+    def _card_type_chip_class(self, card_type: str) -> str:
+        if card_type == "code_exercise":
+            return "chip-coding"
+        return "chip-concept"
+
+    def _topic_chip_style(self, topic: str) -> str:
+        if not topic:
+            return ""
+
+        # A deterministic tint helps the same topic read as the same cluster across pages.
+        hue = sum(ord(char) for char in topic) % 360
+        return (
+            f"background-color:hsl({hue} 62% 94%);"
+            f"border-color:hsl({hue} 48% 74%);"
+            f"color:hsl({hue} 44% 28%);"
+        )
+
+    def _render_card_badges(self, card_type: str, topic: str) -> str:
+        type_badge = (
+            f'<span class="chip {self._card_type_chip_class(card_type)}">'
+            f"{html.escape(self._card_type_label(card_type))}</span>"
+        )
+        if not topic:
+            return type_badge
+
+        topic_badge = (
+            f'<span class="chip chip-topic" style="{html.escape(self._topic_chip_style(topic))}">'
+            f"{html.escape(topic)}</span>"
+        )
+        return f"{type_badge} {topic_badge}"
 
     def _render_source_view(
         self,
@@ -1318,6 +1559,43 @@ class StudyWebApp:
         </section>
         """
         return self.html_page(f"Source · {source_path.name}", content)
+
+    def _card_form_values(self, card: object) -> dict[str, str]:
+        values = {
+            "title": str(getattr(card, "title", "")),
+            "topic": str(getattr(card, "topic", "")),
+            "tags": ", ".join(getattr(card, "tags", []) or []),
+            "source": str(getattr(card, "source", "")),
+            "prompt": str(getattr(card, "prompt", "") or ""),
+            "answer": str(getattr(card, "answer", "") or ""),
+        }
+        if str(getattr(card, "type", "")) == "code_exercise":
+            values["prompt"] = self._exercise_prompt_text(card)
+            values["answer_py"] = self._read_text_file(getattr(card, "answer_path", None))
+            values["solution_py"] = self._read_text_file(getattr(card, "solution_path", None))
+            values["tests_py"] = self._read_text_file(getattr(card, "tests_path", None))
+        return values
+
+    def _exercise_prompt_text(self, card: object) -> str:
+        return self._read_prompt_file(getattr(card, "prompt_path", None), fallback=str(getattr(card, "title", "")))
+
+    def _read_prompt_file(self, raw_path: str | None, *, fallback: str) -> str:
+        content = self._read_text_file(raw_path)
+        if not content:
+            return fallback
+
+        lines = content.splitlines()
+        if lines and lines[0].startswith("# "):
+            return "\n".join(lines[2:]).strip() or fallback
+        return content
+
+    def _read_text_file(self, raw_path: str | None) -> str:
+        if not raw_path:
+            return ""
+        path = Path(str(raw_path))
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8")
 
     def _render_markdown(
         self,

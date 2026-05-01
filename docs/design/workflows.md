@@ -13,6 +13,13 @@ When the user opens the app:
 
 The scheduler decides what is due. The UI decides how it is presented.
 
+Queue start rules:
+
+- the dashboard should offer a normal review start and a shuffled review start
+- shuffled review start should pick a random eligible due card when a new attempt is created
+- shuffled start should not redefine previous or next navigation order on an already-open queue
+- the selected start mode should stay in review links so the next fresh attempt keeps the same behavior
+
 Queue navigation rules:
 
 - every review page should preserve the active queue mode: `mixed`, `concept`, or `exercise`
@@ -37,7 +44,7 @@ Concept review is direct and single-page.
 After grading, the result page should show any card references so the user can
 inspect the linked source material or metadata tied to that question.
 
-## Code Exercise Review
+## Coding Review
 
 1. Create a fresh temp workspace.
 2. Copy canonical exercise assets into that workspace.
@@ -50,7 +57,7 @@ inspect the linked source material or metadata tied to that question.
 
 ```mermaid
 flowchart TD
-    S[Start Exercise Review] --> W[Create Temp Workspace]
+    S[Start Coding Review] --> W[Create Temp Workspace]
     W --> P[Show Prompt and Workspace Path]
     P --> E[User Edits answer.py Locally]
     E --> R[Run Tests]
@@ -121,6 +128,34 @@ do not edit it directly.
 
 Cards should be manageable from the UI.
 
+Edit behavior:
+
+1. Open a card detail page.
+2. Choose `Edit Card`.
+3. Update metadata and card content in a dedicated edit form.
+4. Save changes without changing the card's scheduling state.
+5. Return to the updated card detail page.
+
+Concept edits should update:
+
+- title
+- topic
+- tags
+- source
+- prompt
+- answer
+
+Exercise edits should update:
+
+- title
+- topic
+- tags
+- source
+- prompt
+- `answer.py`
+- `solution.py`
+- `tests.py`
+
 Delete behavior:
 
 1. Delete the card row and all dependent review history through the database.
@@ -141,3 +176,15 @@ Reference rules:
 - they may contain links or arbitrary metadata
 - they should be visible from card detail pages and review result pages
 - they should remain optional so lightweight cards stay lightweight
+
+## Text Contract Import Results
+
+Pasting a text card contract can create more than one card, so the import flow
+should not redirect straight to the first created card.
+
+Result behavior:
+
+1. Parse and import the full contract atomically.
+2. Show a confirmation page listing every created card.
+3. Link each created card from that summary so the user can inspect or edit any
+   of them immediately.
