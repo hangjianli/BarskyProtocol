@@ -749,6 +749,56 @@ def dashboard_stats(config: StudyConfig) -> DashboardStats:
     )
 
 
+def reset_overdue_cards(config: StudyConfig) -> int:
+    now = utc_now()
+    start_of_day = datetime(now.year, now.month, now.day, tzinfo=UTC)
+    reset_reason = "Manual overdue reset returned the card to box 1 and made it due now."
+
+    with managed_connection(config) as connection:
+        overdue_rows = connection.execute(
+            """
+            SELECT id
+            FROM cards
+            WHERE next_review_at < ?
+            """,
+            (to_iso(start_of_day),),
+        ).fetchall()
+        overdue_ids = [int(row["id"]) for row in overdue_rows]
+        if not overdue_ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in overdue_ids)
+        params: list[object] = [
+            1,
+            to_iso(now),
+            to_iso(now),
+            1,
+            reset_reason,
+            *overdue_ids,
+        ]
+        connection.execute(
+            f"""
+            UPDATE cards
+            SET box = ?,
+                next_review_at = ?,
+                updated_at = ?,
+                last_interval_days = ?,
+                last_schedule_reason = ?
+            WHERE id IN ({placeholders})
+            """,
+            params,
+        )
+        # Drop stale active attempts so the queue reflects the reset state immediately.
+        connection.execute(
+            f"""
+            DELETE FROM review_attempts
+            WHERE status = 'active' AND card_id IN ({placeholders})
+            """,
+            overdue_ids,
+        )
+        return len(overdue_ids)
+
+
 def start_review_attempt(
     config: StudyConfig,
     *,

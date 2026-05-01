@@ -9,6 +9,7 @@ Bootstrap behavior:
 - `pass` -> move up one box, capped at box 5
 - `fail` -> reset to box 1
 - `incomplete` -> keep the current box and reschedule soon
+- admin reset of overdue cards -> move back to box 1 and make due now
 
 Bootstrap intervals:
 
@@ -64,6 +65,10 @@ Every scheduling decision should show:
 - new interval
 - key inputs
 - short reason summary
+
+Administrative reset actions should also leave a clear reason on the card so the
+user can tell that the change came from an overdue reset instead of a normal
+review result.
 
 Example:
 

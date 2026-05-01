@@ -19,6 +19,9 @@ Queue start rules:
 - shuffled review start should pick a random eligible due card when a new attempt is created
 - shuffled start should not redefine previous or next navigation order on an already-open queue
 - the selected start mode should stay in review links so the next fresh attempt keeps the same behavior
+- the dashboard should offer an explicit reset action for cards that were already overdue before today
+- resetting overdue cards should move them back to box 1 and make them due now without creating review history rows
+- resetting overdue cards should clear active attempts for those cards so the queue does not keep stale review sessions
 
 Queue navigation rules:
 
